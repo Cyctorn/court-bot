@@ -256,7 +256,7 @@ class DiscordCourtBot(discord.Client):
                         color=0x00ff00
                     )
                     # Send reconnection message to courtroom
-                    await asyncio.sleep(1)  # Wait for connection to stabilize
+                    await asyncio.sleep(0.5)  # Wait for connection to stabilize
                     await self.objection_bot.send_message("Ruff (Relaying messages)")
                 else:
                     embed = discord.Embed(
@@ -771,6 +771,8 @@ class ObjectionBot:
             # Revert to original bot username when speaking as the bot itself
             original_username = self.config.get('objection', 'bot_username')
             await self.change_username_and_wait(original_username)
+            # Small delay after username change before sending message
+            await asyncio.sleep(0.3)
             await self.send_message("Ruff (You want to pair? Say exactly this: Please pair with me CourtDog-sama)")
 
     async def accept_pairing(self, pair_data):
@@ -922,20 +924,19 @@ async def terminal_command_listener(objection_bot, discord_bot):
                         # Revert to original bot username when speaking as the bot itself
                         original_username = objection_bot.config.get('objection', 'bot_username')
                         await objection_bot.change_username_and_wait(original_username)
+                        # Small delay after username change before sending message
                         await objection_bot.send_message(message)
                         print(f"📤 Sent to courtroom: {message}")
                     else:
                         print("❌ Not connected to objection.lol. Use 'reconnect' first.")
                 else:
                     print("❌ Please provide a message after 'say'. Example: say Hello everyone!")
-            elif cmd_lower == "help":
-                print("Available commands:")
-                print("  say <message>  - Send a message to the objection.lol courtroom")
-                print("  reconnect      - Reconnect to objection.lol")
-                print("  disconnect     - Disconnect from objection.lol")
-                print("  quit/exit/stop - Shutdown the bot")
-                print("  help           - Show this help message")
-            elif cmd:
+                    if objection_bot.connected:
+                        # Revert to original bot username when speaking as the bot itself
+                        original_username = objection_bot.config.get('objection', 'bot_username')
+                        await objection_bot.change_username_and_wait(original_username)
+                        await objection_bot.send_message(message)
+                        print(f"📤 Sent to courtroom: {message}")
                 print(f"Unknown command: {cmd_lower}. Type 'help' for available commands.")
         except (EOFError, KeyboardInterrupt):
             print("🛑 Terminal closed. Shutting down bots...")
