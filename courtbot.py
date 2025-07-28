@@ -54,6 +54,10 @@ class Config:
     
     def apply_env_overrides(self):
         """Apply environment variable overrides to configuration - only for sensitive data"""
+        # Initialize discord section if it doesn't exist
+        if 'discord' not in self.data:
+            self.data['discord'] = {}
+        
         # Discord settings (sensitive and deployment-specific)
         if os.getenv('DISCORD_TOKEN'):
             self.data['discord']['token'] = os.getenv('DISCORD_TOKEN')
@@ -79,11 +83,6 @@ class Config:
                 "room_id": "mm6e7z",
                 "bot_username": "CourtBot"
             },
-            "discord": {
-                "token": "YOUR_DISCORD_BOT_TOKEN",
-                "channel_id": 123456789012345678,
-                "guild_id": 123456789012345678
-            },
             "settings": {
                 "mode": "bridge_only",
                 "ignore_patterns": ["[System]", "[Bot]"],
@@ -94,11 +93,15 @@ class Config:
                 "show_join_leave": True
             }
         }
+        
+        # Ensure the directory exists
+        os.makedirs(os.path.dirname(self.config_file), exist_ok=True)
+        
         with open(self.config_file, 'w') as f:
             json.dump(default_config, f, indent=2)
         self.data = default_config
         print(f"📝 Created default config file: {self.config_file}")
-        print("Please edit the configuration file and restart the bot.")
+        print("Discord settings will be loaded from environment variables.")
     def get(self, section, key=None):
         """Get configuration value"""
         if key is None:
@@ -107,18 +110,20 @@ class Config:
     def validate(self):
         """Validate configuration"""
         errors = []
-        # Check Discord token
-        if self.get('discord', 'token') == "YOUR_DISCORD_BOT_TOKEN":
-            errors.append("Discord token not configured")
-        # Check channel ID
-        if not isinstance(self.get('discord', 'channel_id'), int):
-            errors.append("Discord channel ID must be a number")
-        # Check guild ID
-        if not isinstance(self.get('discord', 'guild_id'), int):
-            errors.append("Discord guild ID must be a number")
-        # Check room ID
+        
+        # Check Discord settings (should come from environment variables)
+        discord_config = self.get('discord')
+        if not discord_config.get('token'):
+            errors.append("Discord token not configured (check DISCORD_TOKEN environment variable)")
+        if not isinstance(discord_config.get('channel_id'), int):
+            errors.append("Discord channel ID must be a number (check DISCORD_CHANNEL_ID environment variable)")
+        if not isinstance(discord_config.get('guild_id'), int):
+            errors.append("Discord guild ID must be a number (check DISCORD_GUILD_ID environment variable)")
+        
+        # Check objection.lol settings
         if not self.get('objection', 'room_id'):
             errors.append("Objection.lol room ID not configured")
+        
         return errors
 class DiscordCourtBot(discord.Client):
     def strip_color_codes(self, text):
