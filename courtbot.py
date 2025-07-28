@@ -33,7 +33,7 @@ def save_nicknames(nicknames):
         print(f"❌ Error saving nicknames: {e}")
 
 class Config:
-    def __init__(self, config_file='/app/config.json'):
+    def __init__(self, config_file='/app/data/config.json'):
         self.config_file = config_file
         self.load_config()
     

@@ -6,7 +6,7 @@ services:
     restart: unless-stopped
     volumes:
       - ./data:/app/data
-      - ./config.json:/app/config.json:ro
+      # Only mount config.json if it exists, otherwise let the app create a default one
     environment:
       - PYTHONUNBUFFERED=1
       # Discord settings (sensitive and deployment-specific)

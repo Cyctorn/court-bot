@@ -15,11 +15,11 @@
 - Replace the channel and guild IDs with your actual Discord IDs
 - Save and close
 
-#### 2. Create your configuration file
-- In the same folder, find `config.example.json`
-- Change to `config.json`
-- Edit the objection.lol room settings (see "Configuration Values" section below)
-- Save and close
+#### 2. Create your configuration file (First Run Only)
+- **IMPORTANT**: Do NOT create a `config.json` file manually
+- When you first run the bot with Docker, it will automatically create `config.json` in the `data` folder
+- After the first run, you can edit `data/config.json` to customize the objection.lol room settings
+- The default room will be set to "mm6e7z" - you can change this later
 
 #### 3. Run the bot
 - Follow the deployment method of your choice (see sections below for Docker or Python setup)
@@ -36,7 +36,7 @@ DISCORD_CHANNEL_ID=1234567890123456789  ← Change to your Discord channel ID
 DISCORD_GUILD_ID=1234567890123456789    ← Change to your Discord server ID
 ```
 
-#### In `config.json` file:
+#### In `data/config.json` file (created automatically on first run):
 ```json
 {
   "objection": {
@@ -45,6 +45,7 @@ DISCORD_GUILD_ID=1234567890123456789    ← Change to your Discord server ID
   }
 }
 ```
+**Note**: This file is created automatically in the `data` folder when you first run the bot.
 
 ### How to Get the IDs You Need
 
