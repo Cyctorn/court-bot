@@ -1,0 +1,15 @@
+{
+  "objection": {
+    "room_id": "mm6e7z",
+    "bot_username": "CourtBot"
+  },
+  "settings": {
+    "mode": "bridge_only",
+    "ignore_patterns": ["[System]", "[Bot]"],
+    "character_id": 408757,
+    "pose_id": 4998989,
+    "max_messages": 50,
+    "delete_commands": true,
+    "show_join_leave": true
+  }
+}

@@ -38,7 +38,7 @@ class Config:
         self.load_config()
     
     def load_config(self):
-        """Load configuration from JSON file"""
+        """Load configuration from JSON file and override with environment variables"""
         if not os.path.exists(self.config_file):
             self.create_default_config()
         try:
@@ -48,6 +48,30 @@ class Config:
             print(f"❌ Error loading config: {e}")
             print("Creating default config...")
             self.create_default_config()
+        
+        # Override with environment variables if they exist
+        self.apply_env_overrides()
+    
+    def apply_env_overrides(self):
+        """Apply environment variable overrides to configuration - only for sensitive data"""
+        # Discord settings (sensitive and deployment-specific)
+        if os.getenv('DISCORD_TOKEN'):
+            self.data['discord']['token'] = os.getenv('DISCORD_TOKEN')
+            print("🔐 Discord token loaded from environment variable")
+        if os.getenv('DISCORD_CHANNEL_ID'):
+            try:
+                self.data['discord']['channel_id'] = int(os.getenv('DISCORD_CHANNEL_ID'))
+                print("🔐 Discord channel ID loaded from environment variable")
+            except ValueError:
+                print(f"❌ Invalid DISCORD_CHANNEL_ID environment variable")
+        if os.getenv('DISCORD_GUILD_ID'):
+            try:
+                self.data['discord']['guild_id'] = int(os.getenv('DISCORD_GUILD_ID'))
+                print("🔐 Discord guild ID loaded from environment variable")
+            except ValueError:
+                print(f"❌ Invalid DISCORD_GUILD_ID environment variable")
+        
+        print("🌍 Environment variable overrides applied")
     def create_default_config(self):
         """Create a default configuration file"""
         default_config = {

@@ -1,3 +1,14 @@
+# Environment files
+.env
+.env.local
+.env.production
+
+# Configuration files (use config.example.json as template)
+config.json
+
+# Data directory contents
+data/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -181,3 +192,4 @@ cython_debug/
 .cursorindexingignore
 
 config.json
+/test
