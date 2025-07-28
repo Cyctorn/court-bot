@@ -15,6 +15,24 @@ import re
 
 # Nickname storage file
 NICKNAME_FILE = '/app/data/nicknames.json'
+# Color storage file
+COLOR_FILE = '/app/data/colors.json'
+
+# Predefined color options for easy access
+PRESET_COLORS = {
+    'red': 'F77337',
+    'green': '00F61C', 
+    'blue': '6BC7F6',
+    'purple': '9B59B6',
+    'orange': 'FF9500',
+    'yellow': 'F1C40F',
+    'pink': 'E91E63',
+    'cyan': '1ABC9C',
+    'lime': '8BC34A',
+    'magenta': 'E74C3C',
+    'gold': 'FFD700',
+    'silver': 'C0C0C0'
+}
 
 def load_nicknames():
     if os.path.exists(NICKNAME_FILE):
@@ -25,12 +43,30 @@ def load_nicknames():
             print(f"❌ Error loading nicknames: {e}")
             return {}
     return {}
+
 def save_nicknames(nicknames):
     try:
         with open(NICKNAME_FILE, 'w') as f:
             json.dump(nicknames, f, indent=2)
     except Exception as e:
         print(f"❌ Error saving nicknames: {e}")
+
+def load_colors():
+    if os.path.exists(COLOR_FILE):
+        try:
+            with open(COLOR_FILE, 'r') as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"❌ Error loading colors: {e}")
+            return {}
+    return {}
+
+def save_colors(colors):
+    try:
+        with open(COLOR_FILE, 'w') as f:
+            json.dump(colors, f, indent=2)
+    except Exception as e:
+        print(f"❌ Error saving colors: {e}")
 
 class Config:
     def __init__(self, config_file='/app/data/config.json'):
@@ -129,11 +165,11 @@ class DiscordCourtBot(discord.Client):
     def strip_color_codes(self, text):
         """Remove objection.lol color codes from text"""
         import re
-        # Pattern to match various color code formats:
-        # [#/hexcolor] - hex colors of any length
-        # [#/r] [#/g] [#/b] etc - single letter colors
+        # Pattern to match only the two valid color code formats:
+        # [#/r] [#/g] [#/b] etc - single letter generic colors
+        # [#/c123456] - custom hex colors with c prefix (exactly 6 hex digits)
         # [/#] - closing tags
-        color_pattern = r'\[#/[a-fA-F0-9]+\]|\[#/[a-zA-Z]\]|\[/#\]'
+        color_pattern = r'\[#/[a-zA-Z]\]|\[#/c[a-fA-F0-9]{6}\]|\[/#\]'
         cleaned = re.sub(color_pattern, '', text)
         print(f"🎨 Color strip: '{text}' → '{cleaned}'")  # Debug line
         return cleaned
@@ -149,6 +185,8 @@ class DiscordCourtBot(discord.Client):
         self.startup_message = None
         # Nickname mapping: discord user id (str) -> nickname (str)
         self.nicknames = load_nicknames()
+        # Color mapping: discord user id (str) -> color code (str)
+        self.colors = load_colors()
         # Create command tree
         self.tree = app_commands.CommandTree(self)
     async def setup_hook(self):
@@ -245,7 +283,12 @@ class DiscordCourtBot(discord.Client):
             )
             embed.add_field(
                 name="Commands",
-                value="/status - Check bridge status\n/reconnect - Reconnect to courtroom\n/nickname - Set/reset your bridge nickname\n/shaba\n/help - Show this help",
+                value="/status - Check bridge status\n/reconnect - Reconnect to courtroom\n/nickname - Set/reset your bridge nickname\n/color - Set your message color\n/shaba\n/help - Show this help",
+                inline=False
+            )
+            embed.add_field(
+                name="Color Presets",
+                value="red, green, blue, purple, orange, yellow, pink, cyan, lime, magenta, gold, silver\nOr use custom hex codes like #ff0000",
                 inline=False
             )
             embed.add_field(
@@ -281,6 +324,41 @@ class DiscordCourtBot(discord.Client):
             self.nicknames[user_id] = nickname
             save_nicknames(self.nicknames)
             await interaction.response.send_message(f"✅ Your bridge nickname is now set to: **{nickname}**\nUse `/nickname reset` to remove it.", ephemeral=True)
+        @self.tree.command(name="color", description="Set your message color for the courtroom ('reset' to remove)")
+        @app_commands.describe(color="Hex color code like 'ff0000' or '#ff0000', preset name like 'red', or 'reset' to remove")
+        async def color_command(interaction: discord.Interaction, color: str):
+            user_id = str(interaction.user.id)
+
+            # Handle reset/removal
+            if color.lower() in ['reset', 'remove', 'clear', 'delete']:
+                if user_id in self.colors:
+                    del self.colors[user_id]
+                    save_colors(self.colors)
+                    await interaction.response.send_message("✅ Your message color has been reset. Messages will use default color.", ephemeral=True)
+                else:
+                    await interaction.response.send_message("ℹ️ You don't have a custom color set.", ephemeral=True)
+                return
+
+            # Check if it's a preset color name
+            preset_color = PRESET_COLORS.get(color.lower())
+            if preset_color:
+                self.colors[user_id] = preset_color.lower()
+                save_colors(self.colors)
+                await interaction.response.send_message(f"✅ Your message color is now set to: **{color.lower()}** (#{preset_color.upper()})\nYour messages will appear in color in the courtroom. Use `/color reset` to remove it.", ephemeral=True)
+                return
+
+            # Remove # if present and validate hex color format
+            clean_color = color.lstrip('#')
+            if not clean_color or not re.match(r'^[0-9a-fA-F]{6}$', clean_color):
+                # Show available preset colors in error message
+                preset_list = ', '.join(PRESET_COLORS.keys())
+                await interaction.response.send_message(f"❌ Color must be a 6-digit hex code (e.g., 'ff0000' or '#ff0000') or a preset color name.\n\n**Available presets:** {preset_list}", ephemeral=True)
+                return
+
+            # Store the color code (without #)
+            self.colors[user_id] = clean_color.lower()
+            save_colors(self.colors)
+            await interaction.response.send_message(f"✅ Your message color is now set to: **#{clean_color.upper()}**\nYour messages will appear in color in the courtroom. Use `/color reset` to remove it.", ephemeral=True)
         @self.tree.command(name="shaba")
         async def shaba_command(interaction: discord.Interaction):
             """Shaba command"""
@@ -291,10 +369,17 @@ class DiscordCourtBot(discord.Client):
                 return
 
             try:
+                # Revert to original bot username when speaking as the bot itself
+                original_username = self.config.get('objection', 'bot_username')
+                print(f"🎭 Shaba command: Changing to bot username: {original_username}")
+                await self.objection_bot.change_username_and_wait(original_username)
+                print(f"🎭 Shaba command: Sending message with background color")
                 await self.objection_bot.send_message("[#bgs122964]")
                 await interaction.followup.send("What the dog doin??", ephemeral=False)
+                print(f"🎭 Shaba command: Successfully executed")
             except Exception as e:
-                await interaction.followup.send(f"❌ Failed", ephemeral=True)
+                print(f"❌ Shaba command error: {e}")
+                await interaction.followup.send(f"❌ Failed to execute shaba command: {str(e)}", ephemeral=True)
     async def on_ready(self):
         print(f'🤖 Discord bot logged in as {self.user}')
         self.bridge_channel = self.get_channel(self.channel_id)
@@ -308,7 +393,12 @@ class DiscordCourtBot(discord.Client):
             )
             embed.add_field(
                 name="Available Commands",
-                value="/status - Check bridge status\n/reconnect - Reconnect to courtroom\n/nickname - Set your bridge nickname\n/shaba\n/help - Show this help",
+                value="/status - Check bridge status\n/reconnect - Reconnect to courtroom\n/nickname - Set your bridge nickname\n/color - Set your message color\n/shaba\n/help - Show this help",
+                inline=False
+            )
+            embed.add_field(
+                name="Color Presets",
+                value="red, green, blue, purple, orange, yellow, pink, cyan, lime, magenta, gold, silver",
                 inline=False
             )
             embed.add_field(
@@ -339,13 +429,21 @@ class DiscordCourtBot(discord.Client):
                 new_username = f"{nickname} ({base_name})"
             else:
                 new_username = f"{discord_name} ({base_name})"
+            
+            # Apply user's custom color if set
+            user_color = self.colors.get(user_id)
+            if user_color:
+                colored_content = f"[#/c{user_color}]{message.content}[/#]"
+            else:
+                colored_content = message.content
+            
             if len(new_username) <= 33:
                 await self.objection_bot.change_username_and_wait(new_username)
-                send_content = message.content
+                send_content = colored_content
             else:
                 new_username = base_name
                 await self.objection_bot.change_username_and_wait(new_username)
-                send_content = f"{discord_name}: {message.content}"
+                send_content = f"{discord_name}: {colored_content}"
             await self.objection_bot.send_message(send_content)
             print(f"🔄 Discord → Objection: {new_username}: {send_content}")
             await self.cleanup_messages()
@@ -670,6 +768,9 @@ class ObjectionBot:
             if self.discord_bot:
                 await self.discord_bot.send_pairing_request_to_discord(data, self)
             self._pending_pair_request = data
+            # Revert to original bot username when speaking as the bot itself
+            original_username = self.config.get('objection', 'bot_username')
+            await self.change_username_and_wait(original_username)
             await self.send_message("Ruff (You want to pair? Say exactly this: Please pair with me CourtDog-sama)")
 
     async def accept_pairing(self, pair_data):
@@ -799,20 +900,43 @@ async def terminal_command_listener(objection_bot, discord_bot):
     """Listen for terminal commands and handle them."""
     while True:
         try:
-            cmd = (await aioconsole.ainput("CourtBot> ")).strip().lower()
-            if cmd == "disconnect":
+            cmd = (await aioconsole.ainput("CourtBot> ")).strip()
+            cmd_lower = cmd.lower()
+            
+            if cmd_lower == "disconnect":
                 print("🛑 Disconnect command received. Disconnecting bots (but script will keep running)...")
                 await objection_bot.disconnect()
                 print("✅ Bots disconnected. Script is still running. Type 'reconnect' to reconnect or 'quit' to exit.")
-            elif cmd in ["quit", "exit", "stop"]:
+            elif cmd_lower in ["quit", "exit", "stop"]:
                 print("🛑 Quit command received. Shutting down bots and exiting...")
                 await shutdown(objection_bot, discord_bot)
-            elif cmd == "reconnect":
+            elif cmd_lower == "reconnect":
                 print("🔄 Reconnect command received. Attempting to reconnect...")
                 await objection_bot.connect_to_room()
                 print("✅ Reconnection attempted.")
+            elif cmd_lower.startswith("say "):
+                # Extract the message after "say "
+                message = cmd[4:]  # Remove "say " prefix (preserving original case)
+                if message.strip():
+                    if objection_bot.connected:
+                        # Revert to original bot username when speaking as the bot itself
+                        original_username = objection_bot.config.get('objection', 'bot_username')
+                        await objection_bot.change_username_and_wait(original_username)
+                        await objection_bot.send_message(message)
+                        print(f"📤 Sent to courtroom: {message}")
+                    else:
+                        print("❌ Not connected to objection.lol. Use 'reconnect' first.")
+                else:
+                    print("❌ Please provide a message after 'say'. Example: say Hello everyone!")
+            elif cmd_lower == "help":
+                print("Available commands:")
+                print("  say <message>  - Send a message to the objection.lol courtroom")
+                print("  reconnect      - Reconnect to objection.lol")
+                print("  disconnect     - Disconnect from objection.lol")
+                print("  quit/exit/stop - Shutdown the bot")
+                print("  help           - Show this help message")
             elif cmd:
-                print(f"Unknown command: {cmd}")
+                print(f"Unknown command: {cmd_lower}. Type 'help' for available commands.")
         except (EOFError, KeyboardInterrupt):
             print("🛑 Terminal closed. Shutting down bots...")
             await shutdown(objection_bot, discord_bot)
@@ -849,6 +973,9 @@ async def main():
         setup_signal_handlers(asyncio.get_running_loop(), objection_bot, discord_bot)
         # Send initial greeting
         await asyncio.sleep(3)  # Wait for Discord bot to connect
+        # Revert to original bot username for initial greeting
+        original_username = objection_bot.config.get('objection', 'bot_username')
+        await objection_bot.change_username_and_wait(original_username)
         await objection_bot.send_message("[#bgs20412]Ruff (Relaying messages)")
         # Choose mode based on configuration
         mode = config.get('settings', 'mode')
