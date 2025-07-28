@@ -1,0 +1,20 @@
+{
+  "objection": {
+    "room_id": "roomname",
+    "bot_username": "CourtBot"
+  },
+  "discord": {
+    "token": "",
+    "channel_id": 000000,
+	"guild_id": 0000000
+  },
+  "settings": {
+    "mode": "bridge_only",
+    "ignore_patterns": ["[System]", "[Bot]"],
+    "character_id": 1,
+    "pose_id": 1,
+	"max_messages": 25,
+	"delete_commands": true,
+	"show_join_leave": true
+  }
+}

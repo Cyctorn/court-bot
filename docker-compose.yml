@@ -1,0 +1,14 @@
+yaml
+version: '3.8'
+services:
+  courtbot:
+    build: .
+    container_name: courtbot
+    restart: unless-stopped
+    volumes:
+      - ./data:/app/data
+      - ./config.json:/app/config.json:ro
+    environment:
+      - PYTHONUNBUFFERED=1
+    stdin_open: true
+    tty: true
