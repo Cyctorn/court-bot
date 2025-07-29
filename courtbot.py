@@ -258,6 +258,30 @@ class DiscordCourtBot(discord.Client):
                     # Send reconnection message to courtroom
                     await asyncio.sleep(0.5)  # Wait for connection to stabilize
                     await self.objection_bot.send_message("Ruff (Relaying messages)")
+                    
+                    # Remove old startup messages and send new one
+                    await self.remove_previous_startup_messages()
+                    startup_embed = discord.Embed(
+                        title="🌉 CourtDog Online",
+                        description="Ruff (Bridge reconnected and is now active between Discord and Objection.lol. Only 25 messages will be visible at a time.)",
+                        color=0x00ff00
+                    )
+                    startup_embed.add_field(
+                        name="Available Commands",
+                        value="/status - Check bridge status\n/reconnect - Reconnect to courtroom\n/nickname - Set your bridge nickname\n/color - Set your bridge message color\n/shaba\n/help - Show this help",
+                        inline=False
+                    )
+                    startup_embed.add_field(
+                        name="Color Presets",
+                        value="red, green, blue, purple, orange, yellow, pink, cyan, lime, magenta, gold, silver",
+                        inline=False
+                    )
+                    startup_embed.add_field(
+                        name="Room Info",
+                        value=f"Room ID: `{self.config.get('objection', 'room_id')}`",
+                        inline=False
+                    )
+                    self.startup_message = await self.bridge_channel.send(startup_embed)
                 else:
                     embed = discord.Embed(
                         title="❌ Reconnection Failed",
@@ -385,6 +409,10 @@ class DiscordCourtBot(discord.Client):
         self.bridge_channel = self.get_channel(self.channel_id)
         if self.bridge_channel:
             print(f'📺 Connected to Discord channel: #{self.bridge_channel.name}')
+            
+            # Remove any previous "CourtDog Online" startup messages
+            await self.remove_previous_startup_messages()
+            
             # Send startup message with commands info
             embed = discord.Embed(
                 title="🌉 CourtDog Online",
@@ -494,6 +522,40 @@ class DiscordCourtBot(discord.Client):
         sent_message = await self.bridge_channel.send(embed=embed)
         # Clean up old messages if needed
         await self.cleanup_messages()
+    async def remove_previous_startup_messages(self):
+        """Remove any previous 'CourtDog Online' startup messages from the channel"""
+        if not self.bridge_channel:
+            return
+            
+        try:
+            # Check if bot has permission to delete messages
+            if not self.bridge_channel.permissions_for(self.bridge_channel.guild.me).manage_messages:
+                print("⚠️ Bot lacks 'Manage Messages' permission - cannot delete old startup messages")
+                return
+
+            deleted_count = 0
+            # Look through recent messages for previous startup messages
+            async for message in self.bridge_channel.history(limit=50):
+                # Check if it's a bot message with "CourtDog Online" embed
+                if (message.author == self.user and 
+                    message.embeds and 
+                    len(message.embeds) > 0 and 
+                    message.embeds[0].title == "🌉 CourtDog Online"):
+                    try:
+                        await message.delete()
+                        deleted_count += 1
+                        print(f"🧹 Deleted previous startup message")
+                    except discord.NotFound:
+                        pass  # Message already deleted
+                    except Exception as e:
+                        print(f"⚠️ Failed to delete startup message: {e}")
+            
+            if deleted_count > 0:
+                print(f"🧹 Cleaned up {deleted_count} old startup message(s)")
+                
+        except Exception as e:
+            print(f"⚠️ Error during startup message cleanup: {e}")
+
     async def cleanup_messages(self):
         """Delete old messages to maintain message limit - keep only last 25 messages"""
         max_messages = 25  # Fixed limit
@@ -565,11 +627,7 @@ class DiscordCourtBot(discord.Client):
         if not self.bridge_channel:
             print("[PAIRING] No bridge channel to send pairing request.")
             return
-        view = PairingView(pair_data, objection_bot)
-        await self.bridge_channel.send(
-            "Ruff (I received a pairing request. Should I accept?)",
-            view=view
-        )
+        # Pairing request handling removed - bot will handle automatically
 
 class PairingView(discord.ui.View):
     def __init__(self, pair_data, objection_bot):
@@ -771,8 +829,6 @@ class ObjectionBot:
             # Revert to original bot username when speaking as the bot itself
             original_username = self.config.get('objection', 'bot_username')
             await self.change_username_and_wait(original_username)
-            # Small delay after username change before sending message
-            await asyncio.sleep(0.3)
             await self.send_message("Ruff (You want to pair? Say exactly this: Please pair with me CourtDog-sama)")
 
     async def accept_pairing(self, pair_data):
