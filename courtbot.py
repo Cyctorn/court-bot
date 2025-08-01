@@ -173,6 +173,26 @@ class DiscordCourtBot(discord.Client):
         cleaned = re.sub(color_pattern, '', text)
         print(f"🎨 Color strip: '{text}' → '{cleaned}'")  # Debug line
         return cleaned
+
+    def extract_media_urls(self, message):
+        """Extract image and video URLs from Discord message attachments"""
+        media_urls = []
+        
+        # Extract from attachments (direct file uploads)
+        for attachment in message.attachments:
+            # Check if it's an image by file extension or content type
+            if (attachment.content_type and attachment.content_type.startswith('image/')) or \
+               any(attachment.filename.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp']):
+                media_urls.append(attachment.url)
+                print(f"🖼️ Found image attachment: {attachment.filename} - {attachment.url}")
+            
+            # Check if it's a video by file extension or content type
+            elif (attachment.content_type and attachment.content_type.startswith('video/')) or \
+                 any(attachment.filename.lower().endswith(ext) for ext in ['.mp4', '.mov', '.avi', '.mkv', '.webm', '.flv', '.wmv', '.m4v']):
+                media_urls.append(attachment.url)
+                print(f"🎥 Found video attachment: {attachment.filename} - {attachment.url}")
+        
+        return media_urls
     def __init__(self, objection_bot, config):
         intents = discord.Intents.default()
         intents.message_content = True
@@ -447,6 +467,26 @@ class DiscordCourtBot(discord.Client):
             ignore_patterns = self.config.get('settings', 'ignore_patterns')
             if any(pattern in message.content for pattern in ignore_patterns):
                 return
+            
+            # Extract image and video URLs from attachments and embeds
+            media_urls = self.extract_media_urls(message)
+            
+            # Prepare message content with media
+            content_parts = []
+            if message.content.strip():
+                content_parts.append(message.content)
+            
+            # Add media URLs to the message
+            if media_urls:
+                for url in media_urls:
+                    content_parts.append(url)
+            
+            # If no text content and no media, skip the message
+            if not content_parts:
+                return
+                
+            full_content = "\n".join(content_parts)
+            
             # Prepare new username and message content
             base_name = self.config.get('objection', 'bot_username')
             discord_name = message.author.display_name
@@ -461,9 +501,17 @@ class DiscordCourtBot(discord.Client):
             # Apply user's custom color if set
             user_color = self.colors.get(user_id)
             if user_color:
-                colored_content = f"[#/c{user_color}]{message.content}[/#]"
+                # Add fast text command for media URLs, then apply color
+                if media_urls:
+                    colored_content = f"[#ts15][#/c{user_color}]{full_content}[/#]"
+                else:
+                    colored_content = f"[#/c{user_color}]{full_content}[/#]"
             else:
-                colored_content = message.content
+                # Add fast text command for media URLs even without color
+                if media_urls:
+                    colored_content = f"[#ts15]{full_content}"
+                else:
+                    colored_content = full_content
             
             if len(new_username) <= 33:
                 await self.objection_bot.change_username_and_wait(new_username)
@@ -890,8 +938,9 @@ class ObjectionBot:
             return False
     async def send_message(self, text):
         if not self.connected:
-            print("❌ Not connected")
-            return 
+            print("❌ Not connected - cannot send message")
+            return False
+            
         character_id = self.config.get('settings', 'character_id')
         pose_id = self.config.get('settings', 'pose_id')
         message_data = {
@@ -899,11 +948,18 @@ class ObjectionBot:
             "poseId": pose_id,
             "text": text
         }
+        
         try:
             await self.sio.emit('message', message_data)
             print(f"📤 Sent: {text}")
+            return True
         except Exception as e:
             print(f"❌ Send failed: {e}")
+            # If send fails, it might indicate connection issues
+            if "not connected" in str(e).lower() or "disconnected" in str(e).lower():
+                print("🔗 Send failure suggests connection loss - triggering reconnection check")
+                await self._handle_connection_lost()
+            return False
     def start_input_thread(self):
         """Start a thread to handle console input"""
         def input_worker():
