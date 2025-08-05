@@ -468,6 +468,11 @@ class DiscordCourtBot(discord.Client):
             if any(pattern in message.content for pattern in ignore_patterns):
                 return
             
+            # Ignore messages with Discord user mentions (<@numbers>)
+            if re.search(r'<@\d+>', message.content):
+                print(f"🚫 Ignoring message with user mention: {message.content[:50]}...")
+                return
+            
             # Extract image and video URLs from attachments and embeds
             media_urls = self.extract_media_urls(message)
             
@@ -759,6 +764,12 @@ class ObjectionBot:
                 ignore_patterns = self.config.get('settings', 'ignore_patterns')
                 if any(pattern in text for pattern in ignore_patterns):
                     return
+                
+                # Ignore messages with Discord user mentions (<@numbers>)
+                if re.search(r'<@\d+>', text):
+                    print(f"🚫 Ignoring objection.lol message with user mention: {text[:50]}...")
+                    return
+                
                 # Get username from our stored mapping
                 username = self.user_names.get(user_id)
                 # If we don't have the username, request room update and wait briefly
