@@ -501,6 +501,11 @@ class DiscordCourtBot(discord.Client):
             display_name = nickname if nickname else discord_name
             new_username = f"{display_name} ({base_name})"
             
+            # Debug logging to prevent impersonation issues
+            print(f"🔍 Processing message from Discord user: {discord_name} (ID: {user_id})")
+            print(f"🔍 Display name for message: {display_name}")
+            print(f"🔍 Constructed username: {new_username} (length: {len(new_username)})")
+            
             # Apply user's custom color if set
             user_color = self.colors.get(user_id)
             if user_color:
@@ -516,16 +521,24 @@ class DiscordCourtBot(discord.Client):
                 else:
                     colored_content = full_content
             
-            # Check username length limit (33 characters for objection.lol)
+            # Always check username length limit (33 characters for objection.lol)
+            # and always decide whether to prefix the message based on this check
             if len(new_username) <= 33:
-                await self.objection_bot.change_username_and_wait(new_username)
+                # Username fits, use it and send content without prefix
+                target_username = new_username
                 send_content = colored_content
+                print(f"✅ Username fits, using: {target_username}")
             else:
-                # Username too long, use base name and prefix message with user's name
-                await self.objection_bot.change_username_and_wait(base_name)
+                # Username too long, ALWAYS use base name and ALWAYS prefix message with user's name
+                target_username = base_name
                 send_content = f"{display_name}: {colored_content}"
+                print(f"📏 Username too long, using base name: {target_username}, prefixing with: {display_name}")
+            
+            # Always change username for each message to prevent impersonation
+            await self.objection_bot.change_username_and_wait(target_username)
+            actual_username = target_username
             await self.objection_bot.send_message(send_content)
-            print(f"🔄 Discord → Objection: {new_username}: {send_content}")
+            print(f"🔄 Discord → Objection: {actual_username}: {send_content}")
             await self.cleanup_messages()
     async def send_to_discord(self, username, message):
         """Send a message from objection.lol to Discord"""
