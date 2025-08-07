@@ -498,10 +498,8 @@ class DiscordCourtBot(discord.Client):
             user_id = str(message.author.id)
             # Use nickname if set, else display name
             nickname = self.nicknames.get(user_id)
-            if nickname:
-                new_username = f"{nickname} ({base_name})"
-            else:
-                new_username = f"{discord_name} ({base_name})"
+            display_name = nickname if nickname else discord_name
+            new_username = f"{display_name} ({base_name})"
             
             # Apply user's custom color if set
             user_color = self.colors.get(user_id)
@@ -518,13 +516,14 @@ class DiscordCourtBot(discord.Client):
                 else:
                     colored_content = full_content
             
+            # Check username length limit (33 characters for objection.lol)
             if len(new_username) <= 33:
                 await self.objection_bot.change_username_and_wait(new_username)
                 send_content = colored_content
             else:
-                new_username = base_name
-                await self.objection_bot.change_username_and_wait(new_username)
-                send_content = f"{discord_name}: {colored_content}"
+                # Username too long, use base name and prefix message with user's name
+                await self.objection_bot.change_username_and_wait(base_name)
+                send_content = f"{display_name}: {colored_content}"
             await self.objection_bot.send_message(send_content)
             print(f"🔄 Discord → Objection: {new_username}: {send_content}")
             await self.cleanup_messages()
