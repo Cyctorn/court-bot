@@ -521,9 +521,9 @@ class DiscordCourtBot(discord.Client):
                 else:
                     colored_content = full_content
             
-            # Always check username length limit (33 characters for objection.lol)
+            # Always check username length limit (30 characters for objection.lol)
             # and always decide whether to prefix the message based on this check
-            if len(new_username) <= 33:
+            if len(new_username) <= 30:
                 # Username fits, use it and send content without prefix
                 target_username = new_username
                 send_content = colored_content
