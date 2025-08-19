@@ -1,3 +1,4 @@
+import websockets
 import socketio
 import asyncio
 import threading
@@ -724,244 +725,463 @@ class PairingView(discord.ui.View):
 class ObjectionBot:
     def __init__(self, config):
         self.config = config
-        self.sio = socketio.AsyncClient(logger=False, engineio_logger=False)
+        self.websocket = None
         self.room_id = config.get('objection', 'room_id')
         self.username = config.get('objection', 'bot_username')
         self.connected = False
         self.user_id = None
         self.message_queue = queue.Queue()
         self.discord_bot = None
-        self.user_names = {}
+        self.user_names = {}  # Changed from users to match existing code
+        
+        # Connection management
+        self.ping_interval = 25000  # Default ping interval in ms
+        self.ping_timeout = 5000    # Default ping timeout in ms
+        self.last_ping_time = 0
+        
+        # For Discord bridge compatibility
         self._username_change_event = asyncio.Event()
         self._pending_username = None
         self._pending_pair_request = None
-        self.setup_events()
-    async def change_username_and_wait(self, new_username, timeout=2.0):
-        """Change the bot's username and return immediately after emitting the event."""
-        print(f"[DEBUG] Requesting username change to: {new_username}")
-        self._pending_username = new_username
-        self._username_change_event.clear()
-        await self.sio.emit("change_username", {"username": new_username})
-        # No waiting or timeout, return immediately
-        self._pending_username = None
-    def set_discord_bot(self, discord_bot):
-        """Link the Discord bot"""
-        self.discord_bot = discord_bot
-    def setup_events(self):
-        @self.sio.event
-        async def connect():
-            print(f"✅ Connected as {self.username}")
-            self.connected = True
-            await self.sio.emit('me')
-            await self.sio.emit('get_room')
-        @self.sio.event
-        async def disconnect():
-            print("❌ Disconnected from objection.lol")
+    
+    async def connect_to_room(self):
+        """Connect to the courtroom WebSocket using raw websockets"""
+        base_url = "wss://objection.lol"
+        # Convert HTTP URL to WebSocket URL and construct with parameters
+        websocket_url = f"{base_url}/courtroom-api/socket.io/?roomId={self.room_id}&username={self.username}&password=&EIO=4&transport=websocket"
+        
+        try:
+            # Disconnect first if already connected
+            if self.connected:
+                await self.graceful_disconnect()
+                await asyncio.sleep(2)  # Wait longer for clean disconnection
+
+            print(f"🔌 Connecting to WebSocket: {websocket_url}")
+            self.websocket = await websockets.connect(websocket_url)
+            print(f"✅ WebSocket connection established")
+            
+            # Wait for initial handshake message
+            print("⏳ Waiting for server handshake...")
+            initial_message = await self.websocket.recv()
+            print(f"📨 Received handshake: {initial_message}")
+            
+            if initial_message.startswith('0'):
+                # Parse ping interval and timeout from handshake
+                try:
+                    handshake_data = json.loads(initial_message[1:])
+                    self.ping_interval = handshake_data.get('pingInterval', self.ping_interval)
+                    self.ping_timeout = handshake_data.get('pingTimeout', self.ping_timeout)
+                    print(f"⏱️ Ping interval: {self.ping_interval}ms, Timeout: {self.ping_timeout}ms")
+                except:
+                    print("⚠️ Could not parse handshake data, using defaults")
+                
+                # Send handshake acknowledgment
+                print("🤝 Sending handshake acknowledgment...")
+                await self.websocket.send("40")
+                
+                # Wait for server response
+                response = await self.websocket.recv()
+                print(f"📨 Server response: {response}")
+                
+                if response.startswith('40'):
+                    print("✅ Handshake completed successfully")
+                    self.connected = True
+                    
+                    # Send "me" message to get user info
+                    print("🔍 Sending 'me' message...")
+                    await self.websocket.send('42["me"]')
+                    
+                    # Send "get_room" message to join/get room info
+                    print("🏠 Sending 'get_room' message...")
+                    await self.websocket.send('42["get_room"]')
+                    
+                    # Start the message processing loop
+                    asyncio.create_task(self.message_loop())
+                    asyncio.create_task(self.ping_loop())
+                    
+                    return True
+                else:
+                    print(f"❌ Unexpected response after handshake: {response}")
+                    return False
+            else:
+                print(f"❌ Unexpected initial message: {initial_message}")
+                return False
+            
+        except Exception as e:
+            print(f"❌ Connection failed: {e}")
+            if hasattr(self, 'websocket') and self.websocket:
+                try:
+                    await self.websocket.close()
+                except:
+                    pass
+            return False
+    
+    async def message_loop(self):
+        """Main message processing loop"""
+        try:
+            async for message in self.websocket:
+                await self.process_message(message)
+        except websockets.exceptions.ConnectionClosed:
+            print("🔌 WebSocket connection closed")
             self.connected = False
-        @self.sio.on('message')
-        async def on_message(data, *args):
-            user_id = data.get('userId')
-            message = data.get('message', {})
-            text = message.get('text', '')
+        except Exception as e:
+            print(f"❌ Error in message loop: {e}")
+            self.connected = False
+    
+    async def process_message(self, message: str):
+        """Process incoming WebSocket messages"""
+        try:
+            if message.startswith('42["message"'):
+                # Handle chat messages
+                start = message.find('[')
+                if start > 0:
+                    json_str = message[start:]
+                    try:
+                        data = json.loads(json_str)
+                        if len(data) > 1 and isinstance(data[1], dict):
+                            await self.handle_message(data[1])
+                    except json.JSONDecodeError as e:
+                        print(f"JSON decode error for message: {e}")
+            
+            elif message.startswith('42["update_room"'):
+                # Handle room updates
+                start = message.find('[')
+                if start > 0:
+                    json_str = message[start:]
+                    try:
+                        data = json.loads(json_str)
+                        if len(data) > 1:
+                            await self.handle_room_update(data[1])
+                    except json.JSONDecodeError as e:
+                        print(f"JSON decode error for room update: {e}")
+            
+            elif message.startswith('42["me"'):
+                # Handle "me" response
+                start = message.find('[')
+                if start > 0:
+                    json_str = message[start:]
+                    try:
+                        data = json.loads(json_str)
+                        if len(data) > 1:
+                            await self.handle_me_response(data[1])
+                    except json.JSONDecodeError as e:
+                        print(f"JSON decode error for me response: {e}")
+            
+            elif message.startswith('42["user_joined"'):
+                # Handle user joined events
+                start = message.find('[')
+                if start > 0:
+                    json_str = message[start:]
+                    try:
+                        data = json.loads(json_str)
+                        if len(data) > 1:
+                            await self.handle_user_joined(data[1])
+                    except json.JSONDecodeError as e:
+                        print(f"JSON decode error for user joined: {e}")
+            
+            elif message.startswith('42["user_left"'):
+                # Handle user left events
+                start = message.find('[')
+                if start > 0:
+                    json_str = message[start:]
+                    try:
+                        data = json.loads(json_str)
+                        if len(data) > 1:
+                            await self.handle_user_left(data[1])
+                    except json.JSONDecodeError as e:
+                        print(f"JSON decode error for user left: {e}")
+            
+            elif message.startswith('42["update_user"'):
+                # Handle user update events
+                start = message.find('[')
+                if start > 0:
+                    json_str = message[start:]
+                    try:
+                        data = json.loads(json_str)
+                        if len(data) > 2:
+                            await self.handle_update_user(data[1], data[2])
+                    except json.JSONDecodeError as e:
+                        print(f"JSON decode error for user update: {e}")
+            
+            elif message.startswith('42["create_pair"'):
+                # Handle pairing requests
+                start = message.find('[')
+                if start > 0:
+                    json_str = message[start:]
+                    try:
+                        data = json.loads(json_str)
+                        if len(data) > 1:
+                            await self.handle_create_pair(data[1])
+                    except json.JSONDecodeError as e:
+                        print(f"JSON decode error for create pair: {e}")
+            
+            elif message.startswith('2'):
+                # Ping message, respond with pong
+                await self.websocket.send("3")
+                print("📡 Received ping, sent pong")
+                
+            elif message.startswith('3'):
+                # Pong message
+                print("📡 Received pong")
+            
+        except Exception as e:
+            print(f"❌ Error processing message: {e}")
+    
+    async def handle_message(self, data):
+        """Handle incoming chat messages"""
+        user_id = data.get('userId')
+        message = data.get('message', {})
+        text = message.get('text', '')
 
-            # Check for pairing request message
-            if "Please pair with me CourtDog-sama" in text and self._pending_pair_request and user_id != self.user_id:
-                print(f"[PAIRING] Auto-accepting pairing due to message: {text}")
-                await self.accept_pairing(self._pending_pair_request)
-                self._pending_pair_request = None
+        # Check for pairing request message
+        if "Please pair with me CourtDog-sama" in text and self._pending_pair_request and user_id != self.user_id:
+            print(f"[PAIRING] Auto-accepting pairing due to message: {text}")
+            await self.accept_pairing(self._pending_pair_request)
+            self._pending_pair_request = None
+            return
+
+        if user_id != self.user_id:
+            # Check ignore patterns 
+            ignore_patterns = self.config.get('settings', 'ignore_patterns')
+            if any(pattern in text for pattern in ignore_patterns):
                 return
+            
+            # Ignore messages with Discord user mentions (<@numbers>)
+            if re.search(r'<@\d+>', text):
+                print(f"🚫 Ignoring objection.lol message with user mention: {text[:50]}...")
+                return
+            
+            # Get username from our stored mapping
+            username = self.user_names.get(user_id)
+            # If we don't have the username, request room update and wait briefly
+            if username is None:
+                print(f"🔄 Unknown user {user_id[:8]}, requesting room update...")
+                await self.websocket.send('42["get_room"]')
+                username = self.user_names.get(user_id, f"User-{user_id[:8]}")
+            print(f"📨 Received: {username}: {text}")
+            # Send to Discord if connected
+            if self.discord_bot:
+                await self.discord_bot.send_to_discord(username, text)
+    
+    async def handle_room_update(self, data):
+        """Handle room updates to get user information"""
+        users = data.get('users', [])
 
-            if user_id != self.user_id:
-                # Check ignore patterns 
-                ignore_patterns = self.config.get('settings', 'ignore_patterns')
-                if any(pattern in text for pattern in ignore_patterns):
-                    return
-                
-                # Ignore messages with Discord user mentions (<@numbers>)
-                if re.search(r'<@\d+>', text):
-                    print(f"🚫 Ignoring objection.lol message with user mention: {text[:50]}...")
-                    return
-                
-                # Get username from our stored mapping
-                username = self.user_names.get(user_id)
-                # If we don't have the username, request room update and wait briefly
-                if username is None:
-                    print(f"🔄 Unknown user {user_id[:8]}, requesting room update...")
-                    await self.sio.emit('get_room')
-                    username = self.user_names.get(user_id, f"User-{user_id[:8]}")
-                print(f"📨 Received: {username}: {text}")
-                # Send to Discord if connected
-                if self.discord_bot:
-                    await self.discord_bot.send_to_discord(username, text)
-        @self.sio.on('me')
-        async def on_me(data, *args):
-            if 'user' in data and 'id' in data['user']:
-                self.user_id = data['user']['id']
-                print(f"🤖 Bot ID: {self.user_id}")
-                print(f"[DEBUG] Received bot user ID: {self.user_id}")
-        @self.sio.on('user_joined')
-        async def on_user_joined(data, *args):
-            """Handle user_joined event from server"""
-            print(f"[DEBUG] Received user_joined: {data}")
+        # Update our username mapping
+        for user in users:
+            if 'id' in user and 'username' in user:
+                user_id = user['id']
+                username = user['username']
+                self.user_names[user_id] = username
+        
+        # Signal username change event if our username was updated
+        if self.user_id:
+            for user in users:
+                if user.get('id') == self.user_id and self._pending_username:
+                    if user.get('username') == self._pending_username:
+                        print(f"[DEBUG] Username for our user_id matched pending username: {self._pending_username}")
+                        self._username_change_event.set()
+        
+        usernames = [user.get('username') for user in users]
+        print(f"👥 Users in room: {usernames}")
+    
+    async def handle_me_response(self, data):
+        """Handle 'me' response to get our user ID"""
+        if 'user' in data and 'id' in data['user']:
+            self.user_id = data['user']['id']
+            print(f"🤖 Bot ID: {self.user_id}")
+    
+    async def handle_user_joined(self, data):
+        """Handle user_joined events"""
+        print(f"[DEBUG] Received user_joined: {data}")
 
-            if isinstance(data, dict):
-                user_id = data.get('id')
-                username = data.get('username')
+        if isinstance(data, dict):
+            user_id = data.get('id')
+            username = data.get('username')
 
-                if user_id and username:
-                    # Add to our user mapping
-                    self.user_names[user_id] = username
-
-                    # Don't show notification for the bot itself
-                    if user_id != self.user_id:
-                        print(f"👋 User joined: {username}")
-
-                        # Send join notification to Discord
-                        if self.discord_bot:
-                            current_users = list(self.user_names.values())
-                            await self.discord_bot.send_user_notification(username, "joined", current_users)
-        @self.sio.on('user_left')
-        async def on_user_left(user_id, *args):
-            """Handle user_left event from server"""
-            print(f"[DEBUG] Received user_left: {user_id}")
-
-            if user_id and user_id in self.user_names:
-                username = self.user_names[user_id]
+            if user_id and username:
+                # Add to our user mapping
+                self.user_names[user_id] = username
 
                 # Don't show notification for the bot itself
                 if user_id != self.user_id:
-                    print(f"👋 User left: {username}")
+                    print(f"👋 User joined: {username}")
 
-                    # Send leave notification to Discord
+                    # Send join notification to Discord
                     if self.discord_bot:
-                        # Remove from mapping first, then get current users
-                        del self.user_names[user_id]
                         current_users = list(self.user_names.values())
-                        await self.discord_bot.send_user_notification(username, "left", current_users)
-                else:
-                    # Still remove from mapping even if it's the bot
+                        await self.discord_bot.send_user_notification(username, "joined", current_users)
+    
+    async def handle_user_left(self, user_id):
+        """Handle user_left events"""
+        print(f"[DEBUG] Received user_left: {user_id}")
+
+        if user_id and user_id in self.user_names:
+            username = self.user_names[user_id]
+
+            # Don't show notification for the bot itself
+            if user_id != self.user_id:
+                print(f"👋 User left: {username}")
+
+                # Send leave notification to Discord
+                if self.discord_bot:
+                    # Remove from mapping first, then get current users
                     del self.user_names[user_id]
-        @self.sio.on('update_user')
-        async def on_update_user(user_id, user_data, *args):
-            """Handle user_update event when users change their names"""
-            print(f"[DEBUG] Received update_user: user_id={user_id}, data={user_data}")
+                    current_users = list(self.user_names.values())
+                    await self.discord_bot.send_user_notification(username, "left", current_users)
+            else:
+                # Still remove from mapping even if it's the bot
+                del self.user_names[user_id]
+    
+    async def handle_update_user(self, user_id, user_data):
+        """Handle user updates (username changes)"""
+        print(f"[DEBUG] Received update_user: user_id={user_id}, data={user_data}")
 
-            if isinstance(user_data, dict) and user_id:
-                new_username = user_data.get('username')
+        if isinstance(user_data, dict) and user_id:
+            new_username = user_data.get('username')
 
-                if new_username:
-                    # Get the old username before updating
-                    old_username = self.user_names.get(user_id, f"User-{user_id[:8]}")
+            if new_username:
+                # Get the old username before updating
+                old_username = self.user_names.get(user_id, f"User-{user_id[:8]}")
 
-                    # Update our user mapping with the new username
-                    self.user_names[user_id] = new_username
+                # Update our user mapping with the new username
+                self.user_names[user_id] = new_username
 
-                    # Don't show notification for the bot itself
-                    if user_id != self.user_id:
-                        print(f"✏️ User changed name: {old_username} → {new_username}")
+                # Don't show notification for the bot itself
+                if user_id != self.user_id:
+                    print(f"✏️ User changed name: {old_username} → {new_username}")
 
-                        # Send name change notification to Discord
-                        if self.discord_bot:
-                            await self.discord_bot.send_username_change_notification(old_username, new_username)
-        @self.sio.on('update_room')
-        async def on_update_room(data, *args):
-            users = data.get('users', [])
-
-            # Update our username mapping (but don't detect joins/leaves here anymore)
-            for user in users:
-                if 'id' in user and 'username' in user:
-                    user_id = user['id']
-                    username = user['username']
-                    self.user_names[user_id] = username
-            # Signal username change event if our username was updated
-            if self.user_id:
-                for user in users:
-                    if user.get('id') == self.user_id and self._pending_username:
-                        if user.get('username') == self._pending_username:
-                            print(f"[DEBUG] Username for our user_id matched pending username: {self._pending_username}")
-                            self._username_change_event.set()
-            usernames = [user.get('username') for user in users]
-            print(f"👥 Users in room: {usernames}")
-        @self.sio.on('create_pair')
-        async def on_create_pair(data, *args):
-            print(f"[PAIRING] Received create_pair: {data}")
-            # Only respond if our user_id is in the pairs list
-            pairs = data.get('pairs', [])
-            if not self.user_id:
-                print("[PAIRING] Bot user_id not set yet, ignoring create_pair.")
-                return
-            found = any(pair.get('userId') == self.user_id for pair in pairs)
-            if not found:
-                print(f"[PAIRING] Ignoring create_pair: bot user_id {self.user_id} not in pairs.")
-                return
-            if self.discord_bot:
-                await self.discord_bot.send_pairing_request_to_discord(data, self)
-            self._pending_pair_request = data
-            # Revert to original bot username when speaking as the bot itself
-            original_username = self.config.get('objection', 'bot_username')
-            await self.change_username_and_wait(original_username)
-            await self.send_message("Ruff (You want to pair? Say exactly this: Please pair with me CourtDog-sama)")
+                    # Send name change notification to Discord
+                    if self.discord_bot:
+                        await self.discord_bot.send_username_change_notification(old_username, new_username)
+    
+    async def handle_create_pair(self, data):
+        """Handle pairing requests"""
+        print(f"[PAIRING] Received create_pair: {data}")
+        # Only respond if our user_id is in the pairs list
+        pairs = data.get('pairs', [])
+        if not self.user_id:
+            print("[PAIRING] Bot user_id not set yet, ignoring create_pair.")
+            return
+        found = any(pair.get('userId') == self.user_id for pair in pairs)
+        if not found:
+            print(f"[PAIRING] Ignoring create_pair: bot user_id {self.user_id} not in pairs.")
+            return
+        if self.discord_bot:
+            await self.discord_bot.send_pairing_request_to_discord(data, self)
+        self._pending_pair_request = data
+        # Revert to original bot username when speaking as the bot itself
+        original_username = self.config.get('objection', 'bot_username')
+        await self.change_username_and_wait(original_username)
+        await self.send_message("Ruff (You want to pair? Say exactly this: Please pair with me CourtDog-sama)")
+    
+    async def ping_loop(self):
+        """Send periodic ping messages to keep connection alive"""
+        while self.connected and self.websocket:
+            await asyncio.sleep(self.ping_interval / 1000)  # Convert ms to seconds
+            if self.connected and self.websocket:
+                await self.send_ping()
+    
+    async def send_ping(self):
+        """Send ping message to keep connection alive"""
+        if self.websocket and self.connected:
+            await self.websocket.send("2")
+            self.last_ping_time = time.time()
+            print("📡 Sent ping")
+    
+    async def change_username_and_wait(self, new_username, timeout=2.0):
+        """Change the bot's username using WebSocket"""
+        print(f"[DEBUG] Requesting username change to: {new_username}")
+        self._pending_username = new_username
+        self._username_change_event.clear()
+        
+        # Send username change via WebSocket
+        message_data = {"username": new_username}
+        message = f'42["change_username",{json.dumps(message_data)}]'
+        await self.websocket.send(message)
+        
+        # No waiting or timeout, return immediately for compatibility
+        self._pending_username = None
+    
+    def set_discord_bot(self, discord_bot):
+        """Link the Discord bot"""
+        self.discord_bot = discord_bot
 
     async def accept_pairing(self, pair_data):
+        """Accept a pairing request"""
         print(f"[PAIRING] Accepting pair: {pair_data}")
         # Extract pairId from the create_pair data
         pair_id = None
         if isinstance(pair_data, dict):
             pair_id = pair_data.get('id')
         if pair_id:
-            await self.sio.emit("respond_to_pair", {"pairId": pair_id, "status": "accepted"})
+            response_data = {"pairId": pair_id, "status": "accepted"}
+            message = f'42["respond_to_pair",{json.dumps(response_data)}]'
+            await self.websocket.send(message)
         else:
             print("[PAIRING] Could not find pairId in pair_data, not sending respond_to_pair.")
 
     async def decline_pairing(self, pair_data):
+        """Decline a pairing request"""
         print(f"[PAIRING] Declining pair: {pair_data}")
         # Extract pairId from the create_pair data
         pair_id = None
         if isinstance(pair_data, dict):
             pair_id = pair_data.get('id')
         if pair_id:
-            await self.sio.emit("respond_to_pair", {"pairId": pair_id, "status": "rejected"})
-            await self.sio.emit("leave_pair")
+            response_data = {"pairId": pair_id, "status": "rejected"}
+            message = f'42["respond_to_pair",{json.dumps(response_data)}]'
+            await self.websocket.send(message)
+            await self.websocket.send('42["leave_pair"]')
         else:
             print("[PAIRING] Could not find pairId in pair_data, only sending leave_pair.")
-            await self.sio.emit("leave_pair")
+            await self.websocket.send('42["leave_pair"]')
+    
     async def graceful_disconnect(self):
         """Gracefully disconnect: clean up Discord, update room, disconnect socket."""
+        print("🔄 Starting graceful disconnect...")
+        
         if self.discord_bot:
-            await self.discord_bot.full_cleanup()
-        if self.connected:
             try:
-                await self.sio.emit('get_room')  # Request room update before disconnect
+                await self.discord_bot.full_cleanup()
+            except Exception as e:
+                print(f"⚠️ Error during Discord cleanup: {e}")
+        
+        if self.connected and self.websocket:
+            try:
+                # Try to emit final room update before disconnecting
+                await self.websocket.send('42["get_room"]')
+                await asyncio.sleep(0.5)  # Give server time to process
             except Exception as e:
                 print(f"⚠️ Could not emit get_room on disconnect: {e}")
-            await self.sio.disconnect()
+            
+            try:
+                # Explicitly close the websocket
+                print("🔌 Closing WebSocket connection...")
+                await self.websocket.close()
+                
+                # Wait for disconnection to complete
+                await asyncio.sleep(1)
+                
+                print("✅ WebSocket closed successfully")
+                    
+            except Exception as e:
+                print(f"⚠️ Error during socket disconnect: {e}")
+        
+        # Always reset connection state
         self.connected = False
-    async def connect_to_room(self):
-        base_url = "https://objection.lol"
-        socketio_url = f"{base_url}/courtroom-api/socket.io/?roomId={self.room_id}&username={self.username}&password="
-        try:
-            # Disconnect first if already connected
-            if self.connected:
-                await self.graceful_disconnect()
-                await asyncio.sleep(1)  # Wait for clean disconnection
-
-            # CREATE A NEW SOCKETIO CLIENT INSTANCE FOR RECONNECTION
-            print("🔄 Creating fresh socketio client...")
-            self.sio = socketio.AsyncClient(logger=False, engineio_logger=False)
-            self.setup_events()  # Re-setup event handlers on the new client
-
-            await self.sio.connect(
-                socketio_url,
-                socketio_path="/courtroom-api/socket.io/",
-                wait_timeout=10
-            )
-            return True
-        except Exception as e:
-            print(f"❌ Connection failed: {e}")
-            return False
+        print("✅ Graceful disconnect completed")
+    
     async def send_message(self, text):
+        """Send a message to the chatroom"""
         if not self.connected:
             print("❌ Not connected - cannot send message")
+            return False
+            
+        # Check if socket is actually connected before sending
+        if not self.websocket or self.websocket.closed:
+            print("❌ WebSocket connection lost - cannot send message")
+            self.connected = False
             return False
             
         character_id = self.config.get('settings', 'character_id')
@@ -973,15 +1193,16 @@ class ObjectionBot:
         }
         
         try:
-            await self.sio.emit('message', message_data)
+            message = f'42["message",{json.dumps(message_data)}]'
+            await self.websocket.send(message)
             print(f"📤 Sent: {text}")
             return True
         except Exception as e:
             print(f"❌ Send failed: {e}")
-            # If send fails, it might indicate connection issues
-            if "not connected" in str(e).lower() or "disconnected" in str(e).lower():
-                print("🔗 Send failure suggests connection loss - triggering reconnection check")
-                await self._handle_connection_lost()
+            # If send fails, it indicates connection issues
+            if "closed" in str(e).lower() or "disconnected" in str(e).lower():
+                print("🔗 Send failure suggests connection loss - marking as disconnected")
+                self.connected = False
             return False
     def start_input_thread(self):
         """Start a thread to handle console input"""
@@ -998,6 +1219,7 @@ class ObjectionBot:
                     break
         thread = threading.Thread(target=input_worker, daemon=True)
         thread.start()
+    
     async def interactive_mode(self):
         """Handle interactive messaging"""
         print("💬 Interactive mode started. Type messages to send (or 'quit' to exit):")
@@ -1013,11 +1235,14 @@ class ObjectionBot:
                 await asyncio.sleep(0.1)  # Small delay to prevent busy waiting
             except KeyboardInterrupt:
                 break
+    
     async def keep_alive(self):
         """Keep the objection bot alive"""
         while self.connected:
             await asyncio.sleep(1)
+    
     async def disconnect(self):
+        """Disconnect from the server"""
         await self.graceful_disconnect()
 async def shutdown(objection_bot, discord_bot):
     print("Shutting down bots...")
