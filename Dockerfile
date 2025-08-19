@@ -13,6 +13,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 # Create volume for persistent data
 VOLUME ["/app/data"]
-
 # Run the bot
 CMD ["python", "courtbot.py"]
+### `requirements.txt`
+txt
+discord.py>=2.3.0
+python-socketio>=5.8.0
+aioconsole>=0.6.0
+aiohttp>=3.8.0
+websockets>=11.0.0
