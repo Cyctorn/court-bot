@@ -742,11 +742,6 @@ class ObjectionBot:
         # Connection management
         self.ping_interval = 25000  # Default ping interval in ms
         self.ping_timeout = 5000    # Default ping timeout in ms
-        self.last_ping_time = 0
-        self.last_pong_time = 0     # Track when we last received a pong
-        self.connection_timeout = 45 # Seconds to wait for pong before considering connection dead
-        self.last_pong_time = 0     # Track when we last received a pong
-        self.connection_timeout = 45 # Seconds to wait for pong before considering connection dead
         
         # For Discord bridge compatibility
         self._username_change_event = asyncio.Event()
@@ -766,6 +761,7 @@ class ObjectionBot:
                 await asyncio.sleep(2)  # Wait longer for clean disconnection
 
             print(f"🔌 Connecting to WebSocket: {websocket_url}")
+            # Use default WebSocket settings, let server handle ping/pong
             self.websocket = await websockets.connect(websocket_url)
             print(f"✅ WebSocket connection established")
             
@@ -804,10 +800,8 @@ class ObjectionBot:
                     print("🏠 Sending 'get_room' message...")
                     await self.websocket.send('42["get_room"]')
                     
-                    # Start the message processing loop and connection monitoring
+                    # Start the message processing loop only - let server handle ping/pong
                     asyncio.create_task(self.message_loop())
-                    asyncio.create_task(self.ping_loop())
-                    asyncio.create_task(self.connection_monitor())
                     
                     return True
                 else:
@@ -926,14 +920,12 @@ class ObjectionBot:
                         print(f"JSON decode error for create pair: {e}")
             
             elif message.startswith('2'):
-                # Ping message, respond with pong
+                # Ping message from server, respond with pong
                 await self.websocket.send("3")
                 print("📡 Received ping, sent pong")
                 
             elif message.startswith('3'):
-                # Pong message
-                import time
-                self.last_pong_time = time.time()
+                # Pong message from server (response to our ping)
                 print("📡 Received pong")
             
         except Exception as e:
@@ -1086,79 +1078,6 @@ class ObjectionBot:
         original_username = self.config.get('objection', 'bot_username')
         await self.change_username_and_wait(original_username)
         await self.send_message("Ruff (You want to pair? Say exactly this: Please pair with me CourtDog-sama)")
-    
-    async def ping_loop(self):
-        """Send periodic ping messages to keep connection alive"""
-        import time
-        self.last_pong_time = time.time()  # Initialize pong time
-        
-        while self.connected and self.websocket:
-            try:
-                await asyncio.sleep(self.ping_interval / 1000)  # Convert ms to seconds
-                
-                current_time = time.time()
-                
-                # Check if we haven't received a pong in too long
-                if current_time - self.last_pong_time > self.connection_timeout:
-                    print(f"🔌 Connection timeout - no pong received in {self.connection_timeout}s")
-                    self.connected = False
-                    break
-                
-                if self.connected and self.websocket and self.websocket.close_code is None:
-                    await self.send_ping()
-                else:
-                    print("🔌 Ping loop detected connection loss")
-                    self.connected = False
-                    break
-                    
-            except Exception as e:
-                print(f"⚠️ Ping loop error: {e}")
-                self.connected = False
-                break
-        print("🔌 Ping loop ended")
-    
-    async def connection_monitor(self):
-        """Monitor connection health and detect silent disconnections"""
-        import time
-        
-        while self.connected:
-            try:
-                await asyncio.sleep(10)  # Check every 10 seconds
-                
-                if not self.websocket:
-                    print("🔌 Connection monitor: WebSocket is None")
-                    self.connected = False
-                    break
-                    
-                if self.websocket.close_code is not None:
-                    print(f"🔌 Connection monitor: WebSocket closed with code {self.websocket.close_code}")
-                    self.connected = False
-                    break
-                    
-                # Check if connection has been silent for too long
-                current_time = time.time()
-                if hasattr(self, 'last_pong_time') and current_time - self.last_pong_time > (self.connection_timeout + 10):
-                    print(f"🔌 Connection monitor: No activity for {current_time - self.last_pong_time:.1f}s - connection may be dead")
-                    self.connected = False
-                    break
-                    
-            except Exception as e:
-                print(f"⚠️ Connection monitor error: {e}")
-                self.connected = False
-                break
-                
-        print("🔌 Connection monitor ended")
-    
-    async def send_ping(self):
-        """Send ping message to keep connection alive"""
-        try:
-            if self.websocket and self.connected and self.websocket.close_code is None:
-                await self.websocket.send("2")
-                self.last_ping_time = time.time()
-                print("📡 Sent ping")
-        except Exception as e:
-            print(f"⚠️ Ping send error: {e}")
-            self.connected = False
     
     async def change_username_and_wait(self, new_username, timeout=2.0):
         """Change the bot's username using WebSocket"""
@@ -1351,6 +1270,7 @@ def setup_signal_handlers(loop, objection_bot, discord_bot):
         except NotImplementedError:
             # add_signal_handler may not be implemented on Windows event loop
             pass
+
 async def terminal_command_listener(objection_bot, discord_bot):
     """Listen for terminal commands and handle them."""
     while True:
@@ -1423,14 +1343,17 @@ async def main():
         discord_task = asyncio.create_task(discord_bot.start(config.get('discord', 'token')))
         # Start terminal command listener in background
         terminal_task = asyncio.create_task(terminal_command_listener(objection_bot, discord_bot))
+        
         # Setup signal handlers for graceful shutdown
         setup_signal_handlers(asyncio.get_running_loop(), objection_bot, discord_bot)
+        
         # Send initial greeting
         await asyncio.sleep(3)  # Wait for Discord bot to connect
         # Revert to original bot username for initial greeting
         original_username = objection_bot.config.get('objection', 'bot_username')
         await objection_bot.change_username_and_wait(original_username)
         await objection_bot.send_message("[#bgs20412]Ruff (Relaying messages)")
+        
         # Choose mode based on configuration
         mode = config.get('settings', 'mode')
         if mode == "interactive":
@@ -1439,6 +1362,7 @@ async def main():
         else:
             print("🌉 Bridge mode active. Messages will be relayed between Discord and Objection.lol")
             print("Press Ctrl+C to stop the bot")
+        
         try:
             # Keep both bots running
             await asyncio.gather(
