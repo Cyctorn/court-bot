@@ -743,6 +743,10 @@ class ObjectionBot:
         self.ping_interval = 25000  # Default ping interval in ms
         self.ping_timeout = 5000    # Default ping timeout in ms
         self.last_ping_time = 0
+        self.last_pong_time = 0     # Track when we last received a pong
+        self.connection_timeout = 45 # Seconds to wait for pong before considering connection dead
+        self.last_pong_time = 0     # Track when we last received a pong
+        self.connection_timeout = 45 # Seconds to wait for pong before considering connection dead
         
         # For Discord bridge compatibility
         self._username_change_event = asyncio.Event()
@@ -800,9 +804,10 @@ class ObjectionBot:
                     print("🏠 Sending 'get_room' message...")
                     await self.websocket.send('42["get_room"]')
                     
-                    # Start the message processing loop
+                    # Start the message processing loop and connection monitoring
                     asyncio.create_task(self.message_loop())
                     asyncio.create_task(self.ping_loop())
+                    asyncio.create_task(self.connection_monitor())
                     
                     return True
                 else:
@@ -927,6 +932,8 @@ class ObjectionBot:
                 
             elif message.startswith('3'):
                 # Pong message
+                import time
+                self.last_pong_time = time.time()
                 print("📡 Received pong")
             
         except Exception as e:
@@ -1082,15 +1089,65 @@ class ObjectionBot:
     
     async def ping_loop(self):
         """Send periodic ping messages to keep connection alive"""
+        import time
+        self.last_pong_time = time.time()  # Initialize pong time
+        
         while self.connected and self.websocket:
             try:
                 await asyncio.sleep(self.ping_interval / 1000)  # Convert ms to seconds
+                
+                current_time = time.time()
+                
+                # Check if we haven't received a pong in too long
+                if current_time - self.last_pong_time > self.connection_timeout:
+                    print(f"🔌 Connection timeout - no pong received in {self.connection_timeout}s")
+                    self.connected = False
+                    break
+                
                 if self.connected and self.websocket and self.websocket.close_code is None:
                     await self.send_ping()
+                else:
+                    print("🔌 Ping loop detected connection loss")
+                    self.connected = False
+                    break
+                    
             except Exception as e:
                 print(f"⚠️ Ping loop error: {e}")
                 self.connected = False
                 break
+        print("🔌 Ping loop ended")
+    
+    async def connection_monitor(self):
+        """Monitor connection health and detect silent disconnections"""
+        import time
+        
+        while self.connected:
+            try:
+                await asyncio.sleep(10)  # Check every 10 seconds
+                
+                if not self.websocket:
+                    print("🔌 Connection monitor: WebSocket is None")
+                    self.connected = False
+                    break
+                    
+                if self.websocket.close_code is not None:
+                    print(f"🔌 Connection monitor: WebSocket closed with code {self.websocket.close_code}")
+                    self.connected = False
+                    break
+                    
+                # Check if connection has been silent for too long
+                current_time = time.time()
+                if hasattr(self, 'last_pong_time') and current_time - self.last_pong_time > (self.connection_timeout + 10):
+                    print(f"🔌 Connection monitor: No activity for {current_time - self.last_pong_time:.1f}s - connection may be dead")
+                    self.connected = False
+                    break
+                    
+            except Exception as e:
+                print(f"⚠️ Connection monitor error: {e}")
+                self.connected = False
+                break
+                
+        print("🔌 Connection monitor ended")
     
     async def send_ping(self):
         """Send ping message to keep connection alive"""
@@ -1108,8 +1165,18 @@ class ObjectionBot:
         print(f"[DEBUG] Requesting username change to: {new_username}")
         
         # Check if WebSocket is still connected
-        if not self.connected or not self.websocket or self.websocket.close_code is not None:
-            print("❌ Cannot change username - WebSocket not connected")
+        if not self.connected:
+            print("❌ Cannot change username - Bot marked as disconnected")
+            return False
+            
+        if not self.websocket:
+            print("❌ Cannot change username - WebSocket is None")
+            self.connected = False
+            return False
+            
+        if self.websocket.close_code is not None:
+            print(f"❌ Cannot change username - WebSocket closed with code {self.websocket.close_code}")
+            self.connected = False
             return False
             
         self._pending_username = new_username
