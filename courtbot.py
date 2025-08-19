@@ -1178,7 +1178,7 @@ class ObjectionBot:
             return False
             
         # Check if socket is actually connected before sending
-        if not self.websocket or self.websocket.closed:
+        if not self.websocket or self.websocket.close_code is not None:
             print("❌ WebSocket connection lost - cannot send message")
             self.connected = False
             return False
