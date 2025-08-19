@@ -16,8 +16,3 @@ VOLUME ["/app/data"]
 # Run the bot
 CMD ["python", "courtbot.py"]
 ### `requirements.txt`
-discord.py>=2.0.0
-websockets>=11.0.0
-aioconsole>=0.6.0
-aiohttp>=3.8.0
-websockets>=11.0.0
