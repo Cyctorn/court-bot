@@ -535,17 +535,23 @@ class DiscordCourtBot(discord.Client):
                 print(f"📏 Username too long, using base name: {target_username}, prefixing with: {display_name}")
             
             # Always change username for each message to prevent impersonation
-            await self.objection_bot.change_username_and_wait(target_username)
+            username_changed = await self.objection_bot.change_username_and_wait(target_username)
+            if not username_changed:
+                print("❌ Failed to change username - skipping message")
+                return
+                
             actual_username = target_username
-            await self.objection_bot.send_message(send_content)
-            print(f"🔄 Discord → Objection: {actual_username}: {send_content}")
+            message_sent = await self.objection_bot.send_message(send_content)
+            if message_sent:
+                print(f"🔄 Discord → Objection: {actual_username}: {send_content}")
+            else:
+                print(f"❌ Failed to send message to objection.lol")
             await self.cleanup_messages()
     async def send_to_discord(self, username, message):
         """Send a message from objection.lol to Discord"""
         if self.bridge_channel:
             # Strip color codes before sending to Discord
             cleaned_message = self.strip_color_codes(message)
-            import time
             unix_timestamp = int(time.time())
             formatted_message = f"**{username}**:\n{cleaned_message}\n-# <t:{unix_timestamp}:T>"
             sent_message = await self.bridge_channel.send(formatted_message)
@@ -1077,30 +1083,51 @@ class ObjectionBot:
     async def ping_loop(self):
         """Send periodic ping messages to keep connection alive"""
         while self.connected and self.websocket:
-            await asyncio.sleep(self.ping_interval / 1000)  # Convert ms to seconds
-            if self.connected and self.websocket:
-                await self.send_ping()
+            try:
+                await asyncio.sleep(self.ping_interval / 1000)  # Convert ms to seconds
+                if self.connected and self.websocket and self.websocket.close_code is None:
+                    await self.send_ping()
+            except Exception as e:
+                print(f"⚠️ Ping loop error: {e}")
+                self.connected = False
+                break
     
     async def send_ping(self):
         """Send ping message to keep connection alive"""
-        if self.websocket and self.connected:
-            await self.websocket.send("2")
-            self.last_ping_time = time.time()
-            print("📡 Sent ping")
+        try:
+            if self.websocket and self.connected and self.websocket.close_code is None:
+                await self.websocket.send("2")
+                self.last_ping_time = time.time()
+                print("📡 Sent ping")
+        except Exception as e:
+            print(f"⚠️ Ping send error: {e}")
+            self.connected = False
     
     async def change_username_and_wait(self, new_username, timeout=2.0):
         """Change the bot's username using WebSocket"""
         print(f"[DEBUG] Requesting username change to: {new_username}")
+        
+        # Check if WebSocket is still connected
+        if not self.connected or not self.websocket or self.websocket.close_code is not None:
+            print("❌ Cannot change username - WebSocket not connected")
+            return False
+            
         self._pending_username = new_username
         self._username_change_event.clear()
         
-        # Send username change via WebSocket
-        message_data = {"username": new_username}
-        message = f'42["change_username",{json.dumps(message_data)}]'
-        await self.websocket.send(message)
-        
-        # No waiting or timeout, return immediately for compatibility
-        self._pending_username = None
+        try:
+            # Send username change via WebSocket
+            message_data = {"username": new_username}
+            message = f'42["change_username",{json.dumps(message_data)}]'
+            await self.websocket.send(message)
+            
+            # No waiting or timeout, return immediately for compatibility
+            self._pending_username = None
+            return True
+        except Exception as e:
+            print(f"❌ Username change failed: {e}")
+            self.connected = False
+            return False
     
     def set_discord_bot(self, discord_bot):
         """Link the Discord bot"""
