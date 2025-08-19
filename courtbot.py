@@ -1,5 +1,4 @@
 import websockets
-import socketio
 import asyncio
 import threading
 import queue
