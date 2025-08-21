@@ -268,6 +268,8 @@ class DiscordCourtBot(discord.Client):
                 return
             try:
                 print("🔄 Attempting manual reconnection...")
+                # Reset reconnect attempts for manual reconnection
+                self.objection_bot.reconnect_attempts = 0
                 success = await self.objection_bot.connect_to_room()
                 if success:
                     embed = discord.Embed(
@@ -743,6 +745,13 @@ class ObjectionBot:
         self.ping_interval = 25000  # Default ping interval in ms
         self.ping_timeout = 5000    # Default ping timeout in ms
         
+        # Auto-reconnect settings
+        self.auto_reconnect = True
+        self.reconnect_attempts = 0
+        self.max_reconnect_attempts = 10
+        self.reconnect_delay = 5  # seconds between attempts
+        self.reconnect_task = None
+        
         # For Discord bridge compatibility
         self._username_change_event = asyncio.Event()
         self._pending_username = None
@@ -791,6 +800,7 @@ class ObjectionBot:
                 if response.startswith('40'):
                     print("✅ Handshake completed successfully")
                     self.connected = True
+                    self.reconnect_attempts = 0  # Reset reconnect attempts on successful connection
                     
                     # Send "me" message to get user info
                     print("🔍 Sending 'me' message...")
@@ -828,9 +838,15 @@ class ObjectionBot:
         except websockets.exceptions.ConnectionClosed:
             print("🔌 WebSocket connection closed")
             self.connected = False
+            # Start auto-reconnect if enabled
+            if self.auto_reconnect:
+                await self.start_auto_reconnect()
         except Exception as e:
             print(f"❌ Error in message loop: {e}")
             self.connected = False
+            # Start auto-reconnect if enabled
+            if self.auto_reconnect:
+                await self.start_auto_reconnect()
     
     async def process_message(self, message: str):
         """Process incoming WebSocket messages"""
@@ -930,6 +946,51 @@ class ObjectionBot:
             
         except Exception as e:
             print(f"❌ Error processing message: {e}")
+    
+    async def start_auto_reconnect(self):
+        """Start the auto-reconnect process"""
+        if self.reconnect_task and not self.reconnect_task.done():
+            return  # Already attempting to reconnect
+        
+        self.reconnect_task = asyncio.create_task(self.auto_reconnect_loop())
+    
+    async def auto_reconnect_loop(self):
+        """Auto-reconnect loop with exponential backoff"""
+        while self.auto_reconnect and not self.connected and self.reconnect_attempts < self.max_reconnect_attempts:
+            self.reconnect_attempts += 1
+            delay = min(self.reconnect_delay * (2 ** (self.reconnect_attempts - 1)), 60)  # Max 60 seconds
+            
+            print(f"🔄 Auto-reconnect attempt {self.reconnect_attempts}/{self.max_reconnect_attempts} in {delay} seconds...")
+            await asyncio.sleep(delay)
+            
+            try:
+                success = await self.connect_to_room()
+                if success:
+                    print("✅ Auto-reconnect successful!")
+                    # Notify Discord of reconnection
+                    if self.discord_bot and self.discord_bot.bridge_channel:
+                        embed = discord.Embed(
+                            title="🔄 Reconnected",
+                            description="Successfully reconnected to objection.lol courtroom",
+                            color=0x00ff00
+                        )
+                        await self.discord_bot.bridge_channel.send(embed=embed)
+                    return
+                else:
+                    print(f"❌ Auto-reconnect attempt {self.reconnect_attempts} failed")
+            except Exception as e:
+                print(f"❌ Auto-reconnect attempt {self.reconnect_attempts} error: {e}")
+        
+        if self.reconnect_attempts >= self.max_reconnect_attempts:
+            print(f"❌ Auto-reconnect failed after {self.max_reconnect_attempts} attempts")
+            # Notify Discord of failure
+            if self.discord_bot and self.discord_bot.bridge_channel:
+                embed = discord.Embed(
+                    title="❌ Reconnection Failed",
+                    description=f"Failed to reconnect after {self.max_reconnect_attempts} attempts. Use `/reconnect` to try again.",
+                    color=0xff0000
+                )
+                await self.discord_bot.bridge_channel.send(embed=embed)
     
     async def handle_message(self, data):
         """Handle incoming chat messages"""
@@ -1086,16 +1147,25 @@ class ObjectionBot:
         # Check if WebSocket is still connected
         if not self.connected:
             print("❌ Cannot change username - Bot marked as disconnected")
+            # Trigger auto-reconnect if not already in progress
+            if self.auto_reconnect:
+                await self.start_auto_reconnect()
             return False
             
         if not self.websocket:
             print("❌ Cannot change username - WebSocket is None")
             self.connected = False
+            # Trigger auto-reconnect if not already in progress
+            if self.auto_reconnect:
+                await self.start_auto_reconnect()
             return False
             
         if self.websocket.close_code is not None:
             print(f"❌ Cannot change username - WebSocket closed with code {self.websocket.close_code}")
             self.connected = False
+            # Trigger auto-reconnect if not already in progress
+            if self.auto_reconnect:
+                await self.start_auto_reconnect()
             return False
             
         self._pending_username = new_username
@@ -1113,6 +1183,9 @@ class ObjectionBot:
         except Exception as e:
             print(f"❌ Username change failed: {e}")
             self.connected = False
+            # Trigger auto-reconnect if not already in progress
+            if self.auto_reconnect:
+                await self.start_auto_reconnect()
             return False
     
     def set_discord_bot(self, discord_bot):
@@ -1153,6 +1226,15 @@ class ObjectionBot:
         """Gracefully disconnect: clean up Discord, update room, disconnect socket."""
         print("🔄 Starting graceful disconnect...")
         
+        # Cancel auto-reconnect if in progress
+        self.auto_reconnect = False
+        if self.reconnect_task and not self.reconnect_task.done():
+            self.reconnect_task.cancel()
+            try:
+                await self.reconnect_task
+            except asyncio.CancelledError:
+                pass
+        
         if self.discord_bot:
             try:
                 await self.discord_bot.full_cleanup()
@@ -1188,12 +1270,18 @@ class ObjectionBot:
         """Send a message to the chatroom"""
         if not self.connected:
             print("❌ Not connected - cannot send message")
+            # Trigger auto-reconnect if not already in progress
+            if self.auto_reconnect:
+                await self.start_auto_reconnect()
             return False
             
         # Check if socket is actually connected before sending
         if not self.websocket or self.websocket.close_code is not None:
             print("❌ WebSocket connection lost - cannot send message")
             self.connected = False
+            # Trigger auto-reconnect if not already in progress
+            if self.auto_reconnect:
+                await self.start_auto_reconnect()
             return False
             
         character_id = self.config.get('settings', 'character_id')
@@ -1215,6 +1303,9 @@ class ObjectionBot:
             if "closed" in str(e).lower() or "disconnected" in str(e).lower():
                 print("🔗 Send failure suggests connection loss - marking as disconnected")
                 self.connected = False
+                # Trigger auto-reconnect if not already in progress
+                if self.auto_reconnect:
+                    await self.start_auto_reconnect()
             return False
     def start_input_thread(self):
         """Start a thread to handle console input"""
