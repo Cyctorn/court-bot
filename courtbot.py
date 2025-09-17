@@ -165,11 +165,12 @@ class DiscordCourtBot(discord.Client):
     def strip_color_codes(self, text):
         """Remove objection.lol color codes from text"""
         import re
-        # Pattern to match only the two valid color code formats:
+        # Pattern to match:
         # [#/r] [#/g] [#/b] etc - single letter generic colors
         # [#/c123456] - custom hex colors with c prefix (exactly 6 hex digits)
         # [/#] - closing tags
-        color_pattern = r'\[#/[a-zA-Z]\]|\[#/c[a-fA-F0-9]{6}\]|\[/#\]'
+        # [#ts123] - text speed commands with any number
+        color_pattern = r'\[#/[a-zA-Z]\]|\[#/c[a-fA-F0-9]{6}\]|\[/#\]|\[#ts\d+\]'
         cleaned = re.sub(color_pattern, '', text)
         print(f"🎨 Color strip: '{text}' → '{cleaned}'")  # Debug line
         return cleaned
