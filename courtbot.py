@@ -321,7 +321,7 @@ class DiscordCourtBot(discord.Client):
                     )
                     startup_embed.add_field(
                         name="Admin Commands",
-                        value="/title - Change courtroom title\n/slowmode - Set slow mode (requires 3 confirmations)\n/setpassword - Set password to THE USUAL (requires 3 confirmations)\n/textbox - Change textbox appearance",
+                        value="/titlebar - Change courtroom title\n/slowmode - Set slow mode (requires 3 confirmations)\n/setpassword - Set password to THE USUAL (requires 3 confirmations)\n/text - Change textbox appearance",
                         inline=False
                     )
                     startup_embed.add_field(
@@ -370,7 +370,7 @@ class DiscordCourtBot(discord.Client):
             )
             embed.add_field(
                 name="Admin Commands",
-                value="/title - Change courtroom title (admin only)\n/slowmode - Set slow mode (admin only, requires 3 confirmations)\n/setpassword - Set password to THE USUAL (admin only, requires 3 confirmations)\n/textbox - Change textbox appearance (admin only)",
+                value="/titlebar - Change courtroom title (admin only)\n/slowmode - Set slow mode (admin only, requires 3 confirmations)\n/setpassword - Set password to THE USUAL (admin only, requires 3 confirmations)\n/text - Change textbox appearance (admin only)",
                 inline=False
             )
             embed.add_field(
@@ -474,9 +474,9 @@ class DiscordCourtBot(discord.Client):
                 await interaction.followup.send(f"❌ Failed to execute shaba command: {str(e)}", ephemeral=True)
 
         # Admin Commands Section
-        @self.tree.command(name="title", description="Change the chatroom title (admin only)")
+        @self.tree.command(name="titlebar", description="Change the chatroom title (admin only)")
         @app_commands.describe(title="New title for the chatroom (1-150 characters)")
-        async def title_command(interaction: discord.Interaction, title: str):
+        async def titlebar_command(interaction: discord.Interaction, title: str):
             """Change chatroom title (admin only)"""
             await interaction.response.defer(ephemeral=False)
 
@@ -671,9 +671,9 @@ class DiscordCourtBot(discord.Client):
                 )
                 await message.edit(embed=timeout_embed)
 
-        @self.tree.command(name="textbox", description="Change the chatroom textbox appearance (admin only)")
+        @self.tree.command(name="text", description="Change the chatroom textbox appearance (admin only)")
         @app_commands.describe(style="Textbox style (preset name or custom ID)")
-        async def textbox_command(interaction: discord.Interaction, style: str):
+        async def text_command(interaction: discord.Interaction, style: str):
             """Change chatroom textbox appearance (admin only)"""
             await interaction.response.defer(ephemeral=False)
 
@@ -739,7 +739,7 @@ class DiscordCourtBot(discord.Client):
             )
             embed.add_field(
                 name="Admin Commands",
-                value="/title - Change chatroom title (admin only)\n/slowmode - Set slow mode (requires 3 confirmations)\n/setpassword - Set password to THE USUAL (requires 3 confirmations)\n/textbox - Change textbox appearance (admin only)",
+                value="/titlebar - Change chatroom title (admin only)\n/slowmode - Set slow mode (requires 3 confirmations)\n/setpassword - Set password to THE USUAL (requires 3 confirmations)\n/text - Change textbox appearance (admin only)",
                 inline=False
             )
             embed.add_field(
