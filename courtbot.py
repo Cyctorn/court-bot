@@ -703,6 +703,31 @@ class DiscordCourtBot(discord.Client):
             return
         # Pairing request handling removed - bot will handle automatically
 
+    async def send_mod_request_to_discord(self, user_id, username, objection_bot):
+        """Send a moderator request to Discord for approval"""
+        if not self.bridge_channel:
+            print("[MOD] No bridge channel to send mod request.")
+            return
+        
+        embed = discord.Embed(
+            title="🛡️ Moderator Request",
+            description=f"**{username}** has requested moderator status",
+            color=0xff9500  # Orange color
+        )
+        embed.add_field(
+            name="User Info",
+            value=f"Username: {username}\nUser ID: `{user_id[:8]}...`",
+            inline=False
+        )
+        embed.add_field(
+            name="Action Required",
+            value="Click the button below to grant moderator status to this user.",
+            inline=False
+        )
+        
+        view = ModRequestView(user_id, username, objection_bot)
+        await self.bridge_channel.send(embed=embed, view=view)
+
 class PairingView(discord.ui.View):
     def __init__(self, pair_data, objection_bot):
         super().__init__(timeout=60)
@@ -730,6 +755,37 @@ class PairingView(discord.ui.View):
         self.response_sent = True
         self.stop()
 
+class ModRequestView(discord.ui.View):
+    def __init__(self, user_id, username, objection_bot):
+        super().__init__(timeout=300)  # 5 minutes timeout
+        self.user_id = user_id
+        self.username = username
+        self.objection_bot = objection_bot
+        self.response_sent = False
+
+    @discord.ui.button(label="Grant Moderator", style=discord.ButtonStyle.primary, emoji="🛡️")
+    async def grant_mod_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.response_sent:
+            await interaction.response.send_message("Already responded.", ephemeral=True)
+            return
+        
+        # Check if bot still has admin status
+        if not self.objection_bot.is_admin:
+            await interaction.response.send_message("❌ Bot no longer has admin status - cannot grant moderator.", ephemeral=True)
+            return
+        
+        # Attempt to add moderator
+        success = await self.objection_bot.add_moderator(self.user_id)
+        
+        if success:
+            await interaction.response.send_message(f"✅ **{self.username}** has been granted moderator status!", ephemeral=False)
+            print(f"[MOD] {self.username} granted moderator status via Discord approval")
+        else:
+            await interaction.response.send_message(f"❌ Failed to grant moderator status to **{self.username}**. They may no longer be in the room.", ephemeral=True)
+        
+        self.response_sent = True
+        self.stop()
+
 class ObjectionBot:
     def __init__(self, config):
         self.config = config
@@ -752,6 +808,10 @@ class ObjectionBot:
         self.max_reconnect_attempts = 10
         self.reconnect_delay = 5  # seconds between attempts
         self.reconnect_task = None
+        
+        # Admin and moderation settings
+        self.is_admin = False
+        self.current_mods = set()  # Set of current moderator user IDs
         
         # For Discord bridge compatibility
         self._username_change_event = asyncio.Event()
@@ -1018,6 +1078,12 @@ class ObjectionBot:
             self._pending_pair_request = None
             return
 
+        # Check for moderator request message
+        if "Please mod me CourtDog-sama" in text and self.is_admin and user_id != self.user_id:
+            print(f"[MOD] Mod request from user: {text}")
+            await self.handle_mod_request(user_id)
+            return
+
         if user_id != self.user_id:
             # Check ignore patterns 
             ignore_patterns = self.config.get('settings', 'ignore_patterns')
@@ -1160,6 +1226,7 @@ class ObjectionBot:
         # Check if the bot received admin status
         if new_owner_id == self.user_id:
             print("🎯 Bot has been granted admin/owner status!")
+            self.is_admin = True
             
             # Send notification to Discord
             if self.discord_bot and self.discord_bot.bridge_channel:
@@ -1170,11 +1237,16 @@ class ObjectionBot:
                 )
                 embed.add_field(
                     name="Status",
-                    value="The bot can now perform admin actions in the courtroom.",
+                    value="The bot can now perform admin actions including moderator management.",
                     inline=False
                 )
                 await self.discord_bot.bridge_channel.send(embed=embed)
         else:
+            # Someone else received admin status, bot is no longer admin
+            if self.is_admin:
+                print("👑 Bot is no longer admin")
+                self.is_admin = False
+            
             # Someone else received admin status
             username = self.user_names.get(new_owner_id, f"User-{new_owner_id[:8]}")
             print(f"👑 {username} has been granted admin/owner status")
@@ -1187,6 +1259,60 @@ class ObjectionBot:
                     color=0x0099ff
                 )
                 await self.discord_bot.bridge_channel.send(embed=embed)
+    
+    async def handle_mod_request(self, user_id):
+        """Handle moderator request from a user"""
+        username = self.user_names.get(user_id, f"User-{user_id[:8]}")
+        print(f"[MOD] Processing mod request from {username} ({user_id})")
+        
+        # Check if user is already a moderator
+        if user_id in self.current_mods:
+            print(f"[MOD] {username} is already a moderator")
+            return
+        
+        # Send mod request to Discord for approval
+        if self.discord_bot and self.discord_bot.bridge_channel:
+            await self.discord_bot.send_mod_request_to_discord(user_id, username, self)
+    
+    async def add_moderator(self, user_id):
+        """Add a user as a moderator"""
+        if not self.is_admin:
+            print("[MOD] Cannot add moderator - bot is not admin")
+            return False
+        
+        # Check if user is still in the room
+        if user_id not in self.user_names:
+            print(f"[MOD] Cannot add moderator - user {user_id[:8]} not in room")
+            return False
+        
+        # Add to current mods set
+        self.current_mods.add(user_id)
+        
+        # Update moderators on server
+        return await self.update_moderators()
+    
+    async def update_moderators(self):
+        """Update the moderator list on the server"""
+        if not self.is_admin:
+            print("[MOD] Cannot update moderators - bot is not admin")
+            return False
+        
+        # Filter out users who are no longer in the room
+        valid_mods = [mod_id for mod_id in self.current_mods if mod_id in self.user_names]
+        self.current_mods = set(valid_mods)
+        
+        # Send update to server
+        try:
+            update_data = {"mods": valid_mods}
+            message = f'42["update_mods",{json.dumps(update_data)}]'
+            await self.websocket.send(message)
+            
+            mod_usernames = [self.user_names.get(mod_id, f"User-{mod_id[:8]}") for mod_id in valid_mods]
+            print(f"[MOD] Updated moderators: {mod_usernames}")
+            return True
+        except Exception as e:
+            print(f"[MOD] Failed to update moderators: {e}")
+            return False
     
     async def change_username_and_wait(self, new_username, timeout=2.0):
         """Change the bot's username using WebSocket"""
