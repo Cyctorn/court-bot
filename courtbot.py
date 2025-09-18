@@ -1552,12 +1552,12 @@ class ObjectionBot:
             if self.discord_bot and self.discord_bot.bridge_channel:
                 embed = discord.Embed(
                     title="👑 Admin Status Granted",
-                    description="Ruff (I am now an admin in the courtroom!)",
+                    description="Ruff (I'm now an admin in the courtroom!)",
                     color=0xffd700  # Gold color
                 )
                 embed.add_field(
                     name="Status",
-                    value="Ruff (I can now perform admin actions including moderator management.)",
+                    value="Ruff (I can now perform admin commands.)",
                     inline=False
                 )
                 await self.discord_bot.bridge_channel.send(embed=embed)
