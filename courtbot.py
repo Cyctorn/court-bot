@@ -265,6 +265,13 @@ class DiscordCourtBot(discord.Client):
                         inline=False
                     )
                 
+                # Add admin status information
+                admin_status = "🛡️ Yes" if self.objection_bot.is_admin else "❌ No"
+                embed.add_field(
+                    name="Admin Status",
+                    value=admin_status,
+                    inline=True
+                )
             else:
                 embed = discord.Embed(
                     title="🔴 Bridge Status",
@@ -313,8 +320,8 @@ class DiscordCourtBot(discord.Client):
                         inline=False
                     )
                     startup_embed.add_field(
-                        name="Admin-Only Commands",
-                        value="/title - Change courtroom title\n/slowmode - Set slow mode (requires 3 confirmations)\n/setpassword - Set password to THE USUAL (requires 3 confirmations)\n/textbox - Change textbox appearance",
+                        name="Admin Commands",
+                        value="/titlebar - Change courtroom title\n/slowmode - Set slow mode (requires 3 confirmations)\n/setpassword - Set password to THE USUAL (requires 3 confirmations)\n/text - Change textbox appearance",
                         inline=False
                     )
                     startup_embed.add_field(
@@ -362,8 +369,8 @@ class DiscordCourtBot(discord.Client):
                 inline=False
             )
             embed.add_field(
-                name="Admin-Only Commands",
-                value="/title - Change courtroom title (admin only)\n/slowmode - Set slow mode (admin only, requires 3 confirmations)\n/setpassword - Set password to THE USUAL (admin only, requires 3 confirmations)\n/textbox - Change textbox appearance (admin only)",
+                name="Admin Commands",
+                value="/titlebar - Change courtroom title (admin only)\n/slowmode - Set slow mode (admin only, requires 3 confirmations)\n/setpassword - Set password to THE USUAL (admin only, requires 3 confirmations)\n/text - Change textbox appearance (admin only)",
                 inline=False
             )
             embed.add_field(
@@ -467,14 +474,18 @@ class DiscordCourtBot(discord.Client):
                 await interaction.followup.send(f"❌ Failed to execute shaba command: {str(e)}", ephemeral=True)
 
         # Admin Commands Section
-        @self.tree.command(name="title", description="Change the chatroom title (admin only)")
+        @self.tree.command(name="titlebar", description="Change the chatroom title (admin only)")
         @app_commands.describe(title="New title for the chatroom (1-150 characters)")
-        async def title_command(interaction: discord.Interaction, title: str):
+        async def titlebar_command(interaction: discord.Interaction, title: str):
             """Change chatroom title (admin only)"""
             await interaction.response.defer(ephemeral=False)
 
             if not self.objection_bot.connected:
                 await interaction.followup.send("❌ Not connected to objection.lol", ephemeral=False)
+                return
+
+            if not self.objection_bot.is_admin:
+                await interaction.followup.send("❌ Need admin status in the courtroom to change the title", ephemeral=False)
                 return
 
             # Validate title length
@@ -509,6 +520,10 @@ class DiscordCourtBot(discord.Client):
 
             if not self.objection_bot.connected:
                 await interaction.followup.send("❌ Not connected to objection.lol", ephemeral=True)
+                return
+
+            if not self.objection_bot.is_admin:
+                await interaction.followup.send("❌ Need admin status in the courtroom to change slow mode", ephemeral=True)
                 return
 
             # Validate seconds range
@@ -596,6 +611,10 @@ class DiscordCourtBot(discord.Client):
                 await interaction.followup.send("❌ Not connected to objection.lol", ephemeral=True)
                 return
 
+            if not self.objection_bot.is_admin:
+                await interaction.followup.send("❌ Need admin status in the courtroom to change password", ephemeral=True)
+                return
+
             # Create voting embed
             embed = discord.Embed(
                 title="⚠️ Set Emergency Password",
@@ -652,14 +671,18 @@ class DiscordCourtBot(discord.Client):
                 )
                 await message.edit(embed=timeout_embed)
 
-        @self.tree.command(name="textbox", description="Change the chatroom textbox appearance (admin only)")
+        @self.tree.command(name="text", description="Change the chatroom textbox appearance (admin only)")
         @app_commands.describe(style="Textbox style (preset name or custom ID)")
-        async def textbox_command(interaction: discord.Interaction, style: str):
+        async def text_command(interaction: discord.Interaction, style: str):
             """Change chatroom textbox appearance (admin only)"""
             await interaction.response.defer(ephemeral=False)
 
             if not self.objection_bot.connected:
                 await interaction.followup.send("❌ Not connected to objection.lol", ephemeral=False)
+                return
+
+            if not self.objection_bot.is_admin:
+                await interaction.followup.send("❌ Need admin status in the courtroom to change the textbox", ephemeral=False)
                 return
 
             # Check if it's a preset textbox name
@@ -715,8 +738,8 @@ class DiscordCourtBot(discord.Client):
                 inline=False
             )
             embed.add_field(
-                name="Admin-Only Commands",
-                value="/title - Change chatroom title (admin only)\n/slowmode - Set slow mode (requires 3 confirmations)\n/setpassword - Set password to THE USUAL (requires 3 confirmations)\n/textbox - Change textbox appearance (admin only)",
+                name="Admin Commands",
+                value="/titlebar - Change chatroom title (admin only)\n/slowmode - Set slow mode (requires 3 confirmations)\n/setpassword - Set password to THE USUAL (requires 3 confirmations)\n/text - Change textbox appearance (admin only)",
                 inline=False
             )
             embed.add_field(
@@ -1044,6 +1067,11 @@ class ModRequestView(discord.ui.View):
     async def grant_mod_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if self.response_sent:
             await interaction.response.send_message("Already responded.", ephemeral=True)
+            return
+        
+        # Check if bot still has admin status
+        if not self.objection_bot.is_admin:
+            await interaction.response.send_message("❌ Bot no longer has admin status - cannot grant moderator.", ephemeral=True)
             return
         
         # Attempt to add moderator
@@ -1385,7 +1413,7 @@ class ObjectionBot:
             return
 
         # Check for moderator request message
-        if "Please mod me CourtDog-sama" in text and user_id != self.user_id:
+        if "Please mod me CourtDog-sama" in text and self.is_admin and user_id != self.user_id:
             print(f"[MOD] Mod request from user: {text}")
             await self.handle_mod_request(user_id)
             return
@@ -1552,12 +1580,12 @@ class ObjectionBot:
             if self.discord_bot and self.discord_bot.bridge_channel:
                 embed = discord.Embed(
                     title="👑 Admin Status Granted",
-                    description="Ruff (I'm now an admin in the courtroom!)",
+                    description="Ruff (I am now an admin in the courtroom!)",
                     color=0xffd700  # Gold color
                 )
                 embed.add_field(
                     name="Status",
-                    value="Ruff (I can now perform admin commands.)",
+                    value="Ruff (I can now perform admin actions including moderator management.)",
                     inline=False
                 )
                 await self.discord_bot.bridge_channel.send(embed=embed)
@@ -1614,6 +1642,10 @@ class ObjectionBot:
     
     async def add_moderator(self, user_id):
         """Add a user as a moderator"""
+        if not self.is_admin:
+            print("[MOD] Cannot add moderator - bot is not admin")
+            return False
+        
         # Check if user is still in the room
         if user_id not in self.user_names:
             print(f"[MOD] Cannot add moderator - user {user_id[:8]} not in room")
@@ -1627,6 +1659,10 @@ class ObjectionBot:
     
     async def update_moderators(self):
         """Update the moderator list on the server"""
+        if not self.is_admin:
+            print("[MOD] Cannot update moderators - bot is not admin")
+            return False
+        
         # Filter out users who are no longer in the room
         valid_mods = [mod_id for mod_id in self.current_mods if mod_id in self.user_names]
         self.current_mods = set(valid_mods)
@@ -1854,7 +1890,11 @@ class ObjectionBot:
         await self.graceful_disconnect()
     
     async def update_room_title(self, title):
-        """Update the room title"""
+        """Update the room title (admin only)"""
+        if not self.is_admin:
+            print("[TITLE] Cannot update title - bot is not admin")
+            return False
+        
         if not title or len(title) > 150:
             print("[TITLE] Title must be 1-150 characters")
             return False
@@ -1871,7 +1911,11 @@ class ObjectionBot:
             return False
 
     async def update_room_slowmode(self, seconds):
-        """Update the room slow mode"""
+        """Update the room slow mode (admin only)"""
+        if not self.is_admin:
+            print("[SLOWMODE] Cannot update slow mode - bot is not admin")
+            return False
+        
         if seconds < 0 or seconds > 60:
             print("[SLOWMODE] Slow mode seconds must be 0-60")
             return False
@@ -1891,7 +1935,11 @@ class ObjectionBot:
             return False
 
     async def update_room_password(self, password):
-        """Update the room password"""
+        """Update the room password (admin only)"""
+        if not self.is_admin:
+            print("[PASSWORD] Cannot update password - bot is not admin")
+            return False
+        
         # Send update to server using update_room_admin
         try:
             update_data = {"password": password}
@@ -1904,7 +1952,11 @@ class ObjectionBot:
             return False
 
     async def update_room_textbox(self, textbox_id):
-        """Update the room textbox appearance"""
+        """Update the room textbox appearance (admin only)"""
+        if not self.is_admin:
+            print("[TEXTBOX] Cannot update textbox - bot is not admin")
+            return False
+        
         if not textbox_id:
             print("[TEXTBOX] Textbox ID cannot be empty")
             return False
