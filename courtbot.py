@@ -34,6 +34,23 @@ PRESET_COLORS = {
     'silver': 'C0C0C0'
 }
 
+# Predefined textbox/chatbox appearance options
+PRESET_TEXTBOXES = {
+    'aa-trilogy': '1',
+    'aa-apollo': '2', 
+    'aa-classic': '0',
+    'aa-ds': '4',
+    'fallout-nv': 'cf2f70cf-0054-4b29-976d-1dcbad0b3fda',
+    'fallout-3': '2ee23fd4-ca52-4092-a83d-3907efab5a6e',
+    'dq8': '7c62da82-88cd-47a2-823a-13828d48863a',
+    'dq7': '7c3da016-0849-447c-8fc1-43c34ff1d348',
+    'dq5': 'f11d06f2-0252-4387-aa7c-b6e0f01d5c9e',
+    'lobotomy': '5d92666c-0f6a-495b-8105-1aa3097a9f58',
+    'katawa': '189ecc5d-f84b-4c47-a309-12047b96b121',
+    'umineko': '9bf4b29c-9ede-419d-945e-a62eaef35b39',
+    'blue-archive': 'f4b2811d-9c67-496b-a962-e69a5173a408'
+}
+
 def load_nicknames():
     if os.path.exists(NICKNAME_FILE):
         try:
@@ -304,12 +321,17 @@ class DiscordCourtBot(discord.Client):
                     )
                     startup_embed.add_field(
                         name="Admin Commands",
-                        value="/title - Change courtroom title\n/slowmode - Set slow mode (requires 3 confirmations)\n/setpassword - Set password to THE USUAL (requires 3 confirmations)",
+                        value="/title - Change courtroom title\n/slowmode - Set slow mode (requires 3 confirmations)\n/setpassword - Set password to THE USUAL (requires 3 confirmations)\n/textbox - Change textbox appearance",
                         inline=False
                     )
                     startup_embed.add_field(
                         name="Color Presets",
                         value="red, green, blue, purple, orange, yellow, pink, cyan, lime, magenta, gold, silver",
+                        inline=False
+                    )
+                    startup_embed.add_field(
+                        name="Textbox Presets",
+                        value="aa-trilogy, aa-apollo, aa-classic, aa-ds, fallout-nv, fallout-3, dq8, dq7, dq5, lobotomy, katawa, umineko, blue-archive",
                         inline=False
                     )
                     startup_embed.add_field(
@@ -348,12 +370,17 @@ class DiscordCourtBot(discord.Client):
             )
             embed.add_field(
                 name="Admin Commands",
-                value="/title - Change courtroom title (admin only)\n/slowmode - Set slow mode (admin only, requires 3 confirmations)\n/setpassword - Set password to THE USUAL (admin only, requires 3 confirmations)",
+                value="/title - Change courtroom title (admin only)\n/slowmode - Set slow mode (admin only, requires 3 confirmations)\n/setpassword - Set password to THE USUAL (admin only, requires 3 confirmations)\n/textbox - Change textbox appearance (admin only)",
                 inline=False
             )
             embed.add_field(
                 name="Color Presets",
                 value="red, green, blue, purple, orange, yellow, pink, cyan, lime, magenta, gold, silver\nOr use custom hex codes like #ff0000",
+                inline=False
+            )
+            embed.add_field(
+                name="Textbox Presets",
+                value="aa-trilogy, aa-apollo, aa-classic, aa-ds, fallout-nv, fallout-3, dq8, dq7, dq5, lobotomy, katawa, umineko, blue-archive\nOr use custom textbox IDs",
                 inline=False
             )
             embed.add_field(
@@ -644,6 +671,52 @@ class DiscordCourtBot(discord.Client):
                 )
                 await message.edit(embed=timeout_embed)
 
+        @self.tree.command(name="textbox", description="Change the chatroom textbox appearance (admin only)")
+        @app_commands.describe(style="Textbox style (preset name or custom ID)")
+        async def textbox_command(interaction: discord.Interaction, style: str):
+            """Change chatroom textbox appearance (admin only)"""
+            await interaction.response.defer(ephemeral=False)
+
+            if not self.objection_bot.connected:
+                await interaction.followup.send("❌ Not connected to objection.lol", ephemeral=False)
+                return
+
+            if not self.objection_bot.is_admin:
+                await interaction.followup.send("❌ Need admin status in the courtroom to change the textbox", ephemeral=False)
+                return
+
+            # Check if it's a preset textbox name
+            preset_textbox = PRESET_TEXTBOXES.get(style.lower())
+            if preset_textbox:
+                textbox_id = preset_textbox
+                style_name = style.lower()
+            else:
+                # Use the provided style as a custom ID
+                textbox_id = style.strip()
+                style_name = f"custom ID: {textbox_id}"
+
+            if not textbox_id:
+                # Show available preset textboxes in error message
+                preset_list = ', '.join(PRESET_TEXTBOXES.keys())
+                await interaction.followup.send(f"❌ Style must be a preset name or custom textbox ID.\n\n**Available presets:** {preset_list}", ephemeral=False)
+                return
+
+            try:
+                success = await self.objection_bot.update_room_textbox(textbox_id)
+                if success:
+                    embed = discord.Embed(
+                        title="✅ Textbox Updated",
+                        description=f"Successfully changed textbox to: **{style_name}**",
+                        color=0x00ff00
+                    )
+                    await interaction.followup.send(embed=embed, ephemeral=False)
+                    print(f"[TEXTBOX] Discord user {interaction.user.display_name} changed textbox to: {style_name}")
+                else:
+                    await interaction.followup.send("❌ Failed to update textbox. Check bot status and permissions.", ephemeral=False)
+            except Exception as e:
+                print(f"❌ Textbox command error: {e}")
+                await interaction.followup.send(f"❌ Failed to change textbox: {str(e)}", ephemeral=False)
+
     async def on_ready(self):
         print(f'🤖 Discord bot logged in as {self.user}')
         self.bridge_channel = self.get_channel(self.channel_id)
@@ -666,12 +739,17 @@ class DiscordCourtBot(discord.Client):
             )
             embed.add_field(
                 name="Admin Commands",
-                value="/title - Change chatroom title (admin only)\n/slowmode - Set slow mode (requires 3 confirmations)\n/setpassword - Set password to THE USUAL (requires 3 confirmations)",
+                value="/title - Change chatroom title (admin only)\n/slowmode - Set slow mode (requires 3 confirmations)\n/setpassword - Set password to THE USUAL (requires 3 confirmations)\n/textbox - Change textbox appearance (admin only)",
                 inline=False
             )
             embed.add_field(
                 name="Color Presets",
                 value="red, green, blue, purple, orange, yellow, pink, cyan, lime, magenta, gold, silver",
+                inline=False
+            )
+            embed.add_field(
+                name="Textbox Presets",
+                value="aa-trilogy, aa-apollo, aa-classic, aa-ds, fallout-nv, fallout-3, dq8, dq7, dq5, lobotomy, katawa, umineko, blue-archive",
                 inline=False
             )
             embed.add_field(
@@ -1871,6 +1949,27 @@ class ObjectionBot:
             return True
         except Exception as e:
             print(f"[PASSWORD] Error updating password: {e}")
+            return False
+
+    async def update_room_textbox(self, textbox_id):
+        """Update the room textbox appearance (admin only)"""
+        if not self.is_admin:
+            print("[TEXTBOX] Cannot update textbox - bot is not admin")
+            return False
+        
+        if not textbox_id:
+            print("[TEXTBOX] Textbox ID cannot be empty")
+            return False
+        
+        # Send update to server
+        try:
+            update_data = {"chatbox": textbox_id}
+            message = f'42["update_room",{json.dumps(update_data)}]'
+            await self.websocket.send(message)
+            print(f"[TEXTBOX] Updated room textbox: {textbox_id}")
+            return True
+        except Exception as e:
+            print(f"[TEXTBOX] Error updating textbox: {e}")
             return False
 
 async def shutdown(objection_bot, discord_bot):
