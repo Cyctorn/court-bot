@@ -936,6 +936,18 @@ class ObjectionBot:
                     except json.JSONDecodeError as e:
                         print(f"JSON decode error for create pair: {e}")
             
+            elif message.startswith('42["owner_transfer"'):
+                # Handle owner/admin transfer events
+                start = message.find('[')
+                if start > 0:
+                    json_str = message[start:]
+                    try:
+                        data = json.loads(json_str)
+                        if len(data) > 2:
+                            await self.handle_owner_transfer(data[1], data[2])
+                    except json.JSONDecodeError as e:
+                        print(f"JSON decode error for owner transfer: {e}")
+            
             elif message.startswith('2'):
                 # Ping message from server, respond with pong
                 await self.websocket.send("3")
@@ -1140,6 +1152,51 @@ class ObjectionBot:
         original_username = self.config.get('objection', 'bot_username')
         await self.change_username_and_wait(original_username)
         await self.send_message("Ruff (You want to pair? Say exactly this: Please pair with me CourtDog-sama)")
+    
+    async def handle_owner_transfer(self, new_owner_id, room_code):
+        """Handle owner/admin transfer events"""
+        print(f"[ADMIN] Received owner_transfer: new_owner_id={new_owner_id}, room_code={room_code}")
+        
+        # Check if the bot received admin status
+        if new_owner_id == self.user_id:
+            print("🎯 Bot has been granted admin/owner status!")
+            
+            # Send notification to Discord
+            if self.discord_bot and self.discord_bot.bridge_channel:
+                embed = discord.Embed(
+                    title="👑 Admin Status Granted",
+                    description="The bot has been granted admin/owner status in the courtroom!",
+                    color=0xffd700  # Gold color
+                )
+                embed.add_field(
+                    name="Room Info",
+                    value=f"Room ID: `{self.room_id}`\nRoom Code: `{room_code}`",
+                    inline=False
+                )
+                embed.add_field(
+                    name="Status",
+                    value="The bot can now perform admin actions in the courtroom.",
+                    inline=False
+                )
+                await self.discord_bot.bridge_channel.send(embed=embed)
+        else:
+            # Someone else received admin status
+            username = self.user_names.get(new_owner_id, f"User-{new_owner_id[:8]}")
+            print(f"👑 {username} has been granted admin/owner status")
+            
+            # Optional: Send notification to Discord about other admin changes
+            if self.discord_bot and self.discord_bot.bridge_channel:
+                embed = discord.Embed(
+                    title="👑 Admin Status Changed",
+                    description=f"**{username}** has been granted admin/owner status in the courtroom",
+                    color=0x0099ff
+                )
+                embed.add_field(
+                    name="Room Info",
+                    value=f"Room ID: `{self.room_id}`\nRoom Code: `{room_code}`",
+                    inline=False
+                )
+                await self.discord_bot.bridge_channel.send(embed=embed)
     
     async def change_username_and_wait(self, new_username, timeout=2.0):
         """Change the bot's username using WebSocket"""
