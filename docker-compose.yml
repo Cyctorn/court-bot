@@ -1,17 +1,14 @@
+yaml
 version: '3.8'
 services:
   courtbot:
     build: .
-    container_name: courtbot
+    container_name: courtbot-adminfork
     restart: unless-stopped
     volumes:
       - ./data:/app/data
-      # Only mount config.json if it exists, otherwise let the app create a default one
+      - ./config.json:/app/config.json:ro
     environment:
       - PYTHONUNBUFFERED=1
-      # Discord settings (sensitive and deployment-specific)
-      - DISCORD_TOKEN=${DISCORD_TOKEN}
-      - DISCORD_CHANNEL_ID=${DISCORD_CHANNEL_ID}
-      - DISCORD_GUILD_ID=${DISCORD_GUILD_ID}
     stdin_open: true
     tty: true
