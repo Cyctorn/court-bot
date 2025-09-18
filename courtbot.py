@@ -247,6 +247,14 @@ class DiscordCourtBot(discord.Client):
                         value="No users found in courtroom",
                         inline=False
                     )
+                
+                # Add admin status information
+                admin_status = "🛡️ Yes" if self.objection_bot.is_admin else "❌ No"
+                embed.add_field(
+                    name="Admin Status",
+                    value=admin_status,
+                    inline=True
+                )
             else:
                 embed = discord.Embed(
                     title="🔴 Bridge Status",
@@ -295,6 +303,11 @@ class DiscordCourtBot(discord.Client):
                         inline=False
                     )
                     startup_embed.add_field(
+                        name="Admin Commands",
+                        value="/title - Change chatroom title (admin only)",
+                        inline=False
+                    )
+                    startup_embed.add_field(
                         name="Color Presets",
                         value="red, green, blue, purple, orange, yellow, pink, cyan, lime, magenta, gold, silver",
                         inline=False
@@ -331,6 +344,11 @@ class DiscordCourtBot(discord.Client):
             embed.add_field(
                 name="Commands",
                 value="/status - Check bridge status\n/reconnect - Reconnect to courtroom\n/nickname - Set/reset your bridge nickname\n/color - Set your message color\n/shaba\n/help - Show this help",
+                inline=False
+            )
+            embed.add_field(
+                name="Admin Commands",
+                value="/title - Change courtroom title (admin only)",
                 inline=False
             )
             embed.add_field(
@@ -427,6 +445,45 @@ class DiscordCourtBot(discord.Client):
             except Exception as e:
                 print(f"❌ Shaba command error: {e}")
                 await interaction.followup.send(f"❌ Failed to execute shaba command: {str(e)}", ephemeral=True)
+
+        # Admin Commands Section
+        @self.tree.command(name="title", description="Change the chatroom title (admin only)")
+        @app_commands.describe(title="New title for the chatroom (1-150 characters)")
+        async def title_command(interaction: discord.Interaction, title: str):
+            """Change chatroom title (admin only)"""
+            await interaction.response.defer(ephemeral=True)
+
+            if not self.objection_bot.connected:
+                await interaction.followup.send("❌ Not connected to objection.lol", ephemeral=True)
+                return
+
+            if not self.objection_bot.is_admin:
+                await interaction.followup.send("❌ Need admin status in the courtroom to change the title", ephemeral=True)
+                return
+
+            # Validate title length
+            if not title or len(title) > 150:
+                await interaction.followup.send("❌ Title must be between 1 and 150 characters", ephemeral=True)
+                return
+
+            # Strip any potentially problematic characters
+            title = title.strip()
+
+            try:
+                success = await self.objection_bot.update_room_title(title)
+                if success:
+                    embed = discord.Embed(
+                        title="✅ Title Updated",
+                        description=f"Successfully changed room title to: **{title}**",
+                        color=0x00ff00
+                    )
+                    await interaction.followup.send(embed=embed, ephemeral=False)
+                    print(f"[TITLE] Discord user {interaction.user.display_name} changed title to: {title}")
+                else:
+                    await interaction.followup.send("❌ Failed to update room title. Check bot status and permissions.", ephemeral=True)
+            except Exception as e:
+                print(f"❌ Title command error: {e}")
+                await interaction.followup.send(f"❌ Failed to change title: {str(e)}", ephemeral=True)
     async def on_ready(self):
         print(f'🤖 Discord bot logged in as {self.user}')
         self.bridge_channel = self.get_channel(self.channel_id)
@@ -445,6 +502,11 @@ class DiscordCourtBot(discord.Client):
             embed.add_field(
                 name="Available Commands",
                 value="/status - Check bridge status\n/reconnect - Reconnect to courtroom\n/nickname - Set your bridge nickname\n/color - Set your message color\n/shaba\n/help - Show this help",
+                inline=False
+            )
+            embed.add_field(
+                name="Admin Commands",
+                value="/title - Change chatroom title (admin only)",
                 inline=False
             )
             embed.add_field(
@@ -1030,6 +1092,18 @@ class ObjectionBot:
                     except json.JSONDecodeError as e:
                         print(f"JSON decode error for owner transfer: {e}")
             
+            elif message.startswith('42["update_mods"'):
+                # Handle moderator list updates
+                start = message.find('[')
+                if start > 0:
+                    json_str = message[start:]
+                    try:
+                        data = json.loads(json_str)
+                        if len(data) > 1:
+                            await self.handle_update_mods(data[1])
+                    except json.JSONDecodeError as e:
+                        print(f"JSON decode error for update mods: {e}")
+            
             elif message.startswith('2'):
                 # Ping message from server, respond with pong
                 await self.websocket.send("3")
@@ -1282,6 +1356,24 @@ class ObjectionBot:
                 )
                 await self.discord_bot.bridge_channel.send(embed=embed)
     
+    async def handle_update_mods(self, mod_list):
+        """Handle moderator list updates from the server"""
+        print(f"[MOD] Received update_mods: {mod_list}")
+        
+        # Update our current moderators list with what the server tells us
+        if isinstance(mod_list, list):
+            self.current_mods = set(mod_list)
+            
+            # Get usernames for logging
+            mod_usernames = []
+            for mod_id in mod_list:
+                username = self.user_names.get(mod_id, f"User-{mod_id[:8]}")
+                mod_usernames.append(username)
+            
+            print(f"[MOD] Current moderators: {mod_usernames}")
+        else:
+            print(f"[MOD] Warning: Expected list but got {type(mod_list)}: {mod_list}")
+    
     async def handle_mod_request(self, user_id):
         """Handle moderator request from a user"""
         username = self.user_names.get(user_id, f"User-{user_id[:8]}")
@@ -1325,8 +1417,8 @@ class ObjectionBot:
         
         # Send update to server
         try:
-            update_data = {"mods": valid_mods}
-            message = f'42["update_mods",{json.dumps(update_data)}]'
+            # Send as array directly, not wrapped in an object
+            message = f'42["update_mods",{json.dumps(valid_mods)}]'
             await self.websocket.send(message)
             
             mod_usernames = [self.user_names.get(mod_id, f"User-{mod_id[:8]}") for mod_id in valid_mods]
@@ -1543,6 +1635,28 @@ class ObjectionBot:
     async def disconnect(self):
         """Disconnect from the server"""
         await self.graceful_disconnect()
+    
+    async def update_room_title(self, title):
+        """Update the room title (admin only)"""
+        if not self.is_admin:
+            print("[TITLE] Cannot update title - bot is not admin")
+            return False
+        
+        if not title or len(title) > 150:
+            print("[TITLE] Title must be 1-150 characters")
+            return False
+        
+        # Send update to server
+        try:
+            update_data = {"title": title}
+            message = f'42["update_room",{json.dumps(update_data)}]'
+            await self.websocket.send(message)
+            print(f"[TITLE] Updated room title: {title}")
+            return True
+        except Exception as e:
+            print(f"[TITLE] Error updating title: {e}")
+            return False
+
 async def shutdown(objection_bot, discord_bot):
     print("Shutting down bots...")
     await objection_bot.disconnect()
