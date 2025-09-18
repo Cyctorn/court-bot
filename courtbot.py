@@ -304,7 +304,7 @@ class DiscordCourtBot(discord.Client):
                     )
                     startup_embed.add_field(
                         name="Admin Commands",
-                        value="/title - Change chatroom title (admin only)\n/slowmode - Set slow mode (requires 3 confirmations)\n/setpassword - Set password to THE USUAL (requires 3 confirmations)",
+                        value="/title - Change courtroom title\n/slowmode - Set slow mode (requires 3 confirmations)\n/setpassword - Set password to THE USUAL (requires 3 confirmations)",
                         inline=False
                     )
                     startup_embed.add_field(
@@ -1373,6 +1373,20 @@ class ObjectionBot:
                 user_id = user['id']
                 username = user['username']
                 self.user_names[user_id] = username
+        
+        # Handle existing moderators when joining room
+        if 'mods' in data:
+            existing_mods = data.get('mods', [])
+            if existing_mods:
+                self.current_mods = set(existing_mods)
+                # Get usernames for logging
+                mod_usernames = []
+                for mod_id in existing_mods:
+                    username = self.user_names.get(mod_id, f"User-{mod_id[:8]}")
+                    mod_usernames.append(username)
+                print(f"[MOD] Found existing moderators in room: {mod_usernames}")
+            else:
+                print(f"[MOD] No existing moderators in room")
         
         # Signal username change event if our username was updated
         if self.user_id:
