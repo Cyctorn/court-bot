@@ -362,7 +362,7 @@ class DiscordCourtBot(discord.Client):
                 inline=False
             )
             embed.add_field(
-                name="Admin Commands",
+                name="Admin-Only Commands",
                 value="/title - Change courtroom title (admin only)\n/slowmode - Set slow mode (admin only, requires 3 confirmations)\n/setpassword - Set password to THE USUAL (admin only, requires 3 confirmations)\n/textbox - Change textbox appearance (admin only)",
                 inline=False
             )
@@ -715,7 +715,7 @@ class DiscordCourtBot(discord.Client):
                 inline=False
             )
             embed.add_field(
-                name="Admin Commands",
+                name="Admin-Only Commands",
                 value="/title - Change chatroom title (admin only)\n/slowmode - Set slow mode (requires 3 confirmations)\n/setpassword - Set password to THE USUAL (requires 3 confirmations)\n/textbox - Change textbox appearance (admin only)",
                 inline=False
             )
