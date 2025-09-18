@@ -1165,13 +1165,8 @@ class ObjectionBot:
             if self.discord_bot and self.discord_bot.bridge_channel:
                 embed = discord.Embed(
                     title="👑 Admin Status Granted",
-                    description="The bot has been granted admin/owner status in the courtroom!",
+                    description="The bot has been granted admin status in the courtroom!",
                     color=0xffd700  # Gold color
-                )
-                embed.add_field(
-                    name="Room Info",
-                    value=f"Room ID: `{self.room_id}`\nRoom Code: `{room_code}`",
-                    inline=False
                 )
                 embed.add_field(
                     name="Status",
@@ -1188,13 +1183,8 @@ class ObjectionBot:
             if self.discord_bot and self.discord_bot.bridge_channel:
                 embed = discord.Embed(
                     title="👑 Admin Status Changed",
-                    description=f"**{username}** has been granted admin/owner status in the courtroom",
+                    description=f"**{username}** has been granted admin status in the courtroom",
                     color=0x0099ff
-                )
-                embed.add_field(
-                    name="Room Info",
-                    value=f"Room ID: `{self.room_id}`\nRoom Code: `{room_code}`",
-                    inline=False
                 )
                 await self.discord_bot.bridge_channel.send(embed=embed)
     
