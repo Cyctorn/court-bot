@@ -304,7 +304,7 @@ class DiscordCourtBot(discord.Client):
                     )
                     startup_embed.add_field(
                         name="Admin Commands",
-                        value="/title - Change chatroom title (admin only)",
+                        value="/title - Change chatroom title (admin only)\n/slowmode - Set slow mode (requires 3 confirmations)\n/setpassword - Set password to THE USUAL (requires 3 confirmations)",
                         inline=False
                     )
                     startup_embed.add_field(
@@ -348,7 +348,7 @@ class DiscordCourtBot(discord.Client):
             )
             embed.add_field(
                 name="Admin Commands",
-                value="/title - Change courtroom title (admin only)",
+                value="/title - Change courtroom title (admin only)\n/slowmode - Set slow mode (admin only, requires 3 confirmations)\n/setpassword - Set password to THE USUAL (admin only, requires 3 confirmations)",
                 inline=False
             )
             embed.add_field(
@@ -484,6 +484,166 @@ class DiscordCourtBot(discord.Client):
             except Exception as e:
                 print(f"❌ Title command error: {e}")
                 await interaction.followup.send(f"❌ Failed to change title: {str(e)}", ephemeral=True)
+
+        @self.tree.command(name="slowmode", description="Set room slow mode (admin only, requires 3 confirmations)")
+        @app_commands.describe(seconds="Slow mode seconds (0-60, 0 = disabled)")
+        async def slowmode_command(interaction: discord.Interaction, seconds: int):
+            """Set room slow mode (admin only, requires confirmations)"""
+            await interaction.response.defer(ephemeral=True)
+
+            if not self.objection_bot.connected:
+                await interaction.followup.send("❌ Not connected to objection.lol", ephemeral=True)
+                return
+
+            if not self.objection_bot.is_admin:
+                await interaction.followup.send("❌ Need admin status in the courtroom to change slow mode", ephemeral=True)
+                return
+
+            # Validate seconds range
+            if seconds < 0 or seconds > 60:
+                await interaction.followup.send("❌ Slow mode seconds must be between 0 and 60", ephemeral=True)
+                return
+
+            # Create voting embed
+            if seconds == 0:
+                embed = discord.Embed(
+                    title="⚠️ Disable Slow Mode",
+                    description="**This action requires 3 user confirmations**\n\nProposed change: **Disable slow mode**",
+                    color=0xff9500
+                )
+            else:
+                embed = discord.Embed(
+                    title="⚠️ Enable Slow Mode", 
+                    description=f"**This action requires 3 user confirmations**\n\nProposed change: **{seconds} second** slow mode",
+                    color=0xff9500
+                )
+            
+            embed.add_field(
+                name="Instructions",
+                value="React with ✅ to confirm this action. Need 4 total reactions (including bot).",
+                inline=False
+            )
+            embed.add_field(
+                name="Initiated by",
+                value=f"{interaction.user.display_name}",
+                inline=True
+            )
+
+            message = await self.bridge_channel.send(embed=embed)
+            await message.add_reaction("✅")
+            
+            await interaction.followup.send(f"✅ Slow mode vote initiated. Need 3 more confirmations.", ephemeral=True)
+            
+            # Wait for reactions
+            def check(reaction, user):
+                return (reaction.message.id == message.id and 
+                       str(reaction.emoji) == "✅" and 
+                       not user.bot and
+                       reaction.count >= 4)  # Bot + 3 users
+            
+            try:
+                await self.objection_bot.discord_bot.wait_for('reaction_add', timeout=300.0, check=check)
+                
+                # Execute the slow mode change
+                success = await self.objection_bot.update_room_slowmode(seconds)
+                if success:
+                    if seconds == 0:
+                        result_embed = discord.Embed(
+                            title="✅ Slow Mode Disabled",
+                            description="Slow mode has been disabled in the courtroom",
+                            color=0x00ff00
+                        )
+                    else:
+                        result_embed = discord.Embed(
+                            title="✅ Slow Mode Enabled",
+                            description=f"Slow mode set to **{seconds} seconds** in the courtroom",
+                            color=0x00ff00
+                        )
+                    await message.edit(embed=result_embed)
+                else:
+                    error_embed = discord.Embed(
+                        title="❌ Failed",
+                        description="Failed to update slow mode. Check bot status and permissions.",
+                        color=0xff0000
+                    )
+                    await message.edit(embed=error_embed)
+            except asyncio.TimeoutError:
+                timeout_embed = discord.Embed(
+                    title="⏰ Vote Expired",
+                    description="Slow mode vote timed out after 5 minutes",
+                    color=0x808080
+                )
+                await message.edit(embed=timeout_embed)
+
+        @self.tree.command(name="setpassword", description="Set room password to THE USUAL (admin only, requires 3 confirmations)")
+        async def setpassword_command(interaction: discord.Interaction):
+            """Set room password (admin only, requires confirmations)"""
+            await interaction.response.defer(ephemeral=True)
+
+            if not self.objection_bot.connected:
+                await interaction.followup.send("❌ Not connected to objection.lol", ephemeral=True)
+                return
+
+            if not self.objection_bot.is_admin:
+                await interaction.followup.send("❌ Need admin status in the courtroom to change password", ephemeral=True)
+                return
+
+            # Create voting embed
+            embed = discord.Embed(
+                title="⚠️ Set Emergency Password",
+                description="**This action requires 3 user confirmations**\n\nProposed change: **Set password to THE USUAL**",
+                color=0xff9500
+            )
+            embed.add_field(
+                name="Instructions",
+                value="React with ✅ to confirm this action. Need 4 total reactions (including bot).",
+                inline=False
+            )
+            embed.add_field(
+                name="Initiated by",
+                value=f"{interaction.user.display_name}",
+                inline=True
+            )
+
+            message = await self.bridge_channel.send(embed=embed)
+            await message.add_reaction("✅")
+            
+            await interaction.followup.send(f"✅ Password change vote initiated. Need 3 more confirmations.", ephemeral=True)
+            
+            # Wait for reactions
+            def check(reaction, user):
+                return (reaction.message.id == message.id and 
+                       str(reaction.emoji) == "✅" and 
+                       not user.bot and
+                       reaction.count >= 4)  # Bot + 3 users
+            
+            try:
+                await self.objection_bot.discord_bot.wait_for('reaction_add', timeout=300.0, check=check)
+                
+                # Execute the password change
+                success = await self.objection_bot.update_room_password("sneedemfeedem")
+                if success:
+                    result_embed = discord.Embed(
+                        title="✅ Password Set",
+                        description="Room password has been set to **THE USUAL**",
+                        color=0x00ff00
+                    )
+                    await message.edit(embed=result_embed)
+                else:
+                    error_embed = discord.Embed(
+                        title="❌ Failed",
+                        description="Failed to update room password. Check bot status and permissions.",
+                        color=0xff0000
+                    )
+                    await message.edit(embed=error_embed)
+            except asyncio.TimeoutError:
+                timeout_embed = discord.Embed(
+                    title="⏰ Vote Expired",
+                    description="Password change vote timed out after 5 minutes",
+                    color=0x808080
+                )
+                await message.edit(embed=timeout_embed)
+
     async def on_ready(self):
         print(f'🤖 Discord bot logged in as {self.user}')
         self.bridge_channel = self.get_channel(self.channel_id)
@@ -506,7 +666,7 @@ class DiscordCourtBot(discord.Client):
             )
             embed.add_field(
                 name="Admin Commands",
-                value="/title - Change chatroom title (admin only)",
+                value="/title - Change chatroom title (admin only)\n/slowmode - Set slow mode (requires 3 confirmations)\n/setpassword - Set password to THE USUAL (requires 3 confirmations)",
                 inline=False
             )
             embed.add_field(
@@ -1417,8 +1577,9 @@ class ObjectionBot:
         
         # Send update to server
         try:
-            # Send as array directly, not wrapped in an object
-            message = f'42["update_mods",{json.dumps(valid_mods)}]'
+            # Send as object with "mods" key, not array directly
+            update_data = {"mods": valid_mods}
+            message = f'42["update_mods",{json.dumps(update_data)}]'
             await self.websocket.send(message)
             
             mod_usernames = [self.user_names.get(mod_id, f"User-{mod_id[:8]}") for mod_id in valid_mods]
@@ -1655,6 +1816,47 @@ class ObjectionBot:
             return True
         except Exception as e:
             print(f"[TITLE] Error updating title: {e}")
+            return False
+
+    async def update_room_slowmode(self, seconds):
+        """Update the room slow mode (admin only)"""
+        if not self.is_admin:
+            print("[SLOWMODE] Cannot update slow mode - bot is not admin")
+            return False
+        
+        if seconds < 0 or seconds > 60:
+            print("[SLOWMODE] Slow mode seconds must be 0-60")
+            return False
+        
+        # Send update to server
+        try:
+            update_data = {"slowModeSeconds": seconds}
+            message = f'42["update_room",{json.dumps(update_data)}]'
+            await self.websocket.send(message)
+            if seconds == 0:
+                print(f"[SLOWMODE] Disabled slow mode")
+            else:
+                print(f"[SLOWMODE] Set slow mode to {seconds} seconds")
+            return True
+        except Exception as e:
+            print(f"[SLOWMODE] Error updating slow mode: {e}")
+            return False
+
+    async def update_room_password(self, password):
+        """Update the room password (admin only)"""
+        if not self.is_admin:
+            print("[PASSWORD] Cannot update password - bot is not admin")
+            return False
+        
+        # Send update to server using update_room_admin
+        try:
+            update_data = {"password": password}
+            message = f'42["update_room_admin",{json.dumps(update_data)}]'
+            await self.websocket.send(message)
+            print(f"[PASSWORD] Updated room password")
+            return True
+        except Exception as e:
+            print(f"[PASSWORD] Error updating password: {e}")
             return False
 
 async def shutdown(objection_bot, discord_bot):
