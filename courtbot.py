@@ -711,7 +711,7 @@ class DiscordCourtBot(discord.Client):
         
         embed = discord.Embed(
             title="🛡️ Moderator Request",
-            description=f"**{username}** has requested moderator status",
+            description=f"Ruff (**{username}** has requested moderator status)",
             color=0xff9500  # Orange color
         )
         embed.add_field(
@@ -778,7 +778,29 @@ class ModRequestView(discord.ui.View):
         success = await self.objection_bot.add_moderator(self.user_id)
         
         if success:
-            await interaction.response.send_message(f"✅ **{self.username}** has been granted moderator status!", ephemeral=False)
+            # Update the embed to show completion
+            embed = discord.Embed(
+                title="✅ Moderator Granted",
+                description=f"**{self.username}** has been granted moderator status!",
+                color=0x00ff00  # Green color
+            )
+            embed.add_field(
+                name="User Info",
+                value=f"Username: {self.username}\nUser ID: `{self.user_id[:8]}...`",
+                inline=False
+            )
+            embed.add_field(
+                name="Status",
+                value="✅ Moderator request completed successfully.",
+                inline=False
+            )
+            
+            # Disable all buttons
+            for item in self.children:
+                item.disabled = True
+            
+            # Update the message with new embed and disabled view
+            await interaction.response.edit_message(embed=embed, view=self)
             print(f"[MOD] {self.username} granted moderator status via Discord approval")
         else:
             await interaction.response.send_message(f"❌ Failed to grant moderator status to **{self.username}**. They may no longer be in the room.", ephemeral=True)
@@ -1232,19 +1254,19 @@ class ObjectionBot:
             if self.discord_bot and self.discord_bot.bridge_channel:
                 embed = discord.Embed(
                     title="👑 Admin Status Granted",
-                    description="The bot has been granted admin status in the courtroom!",
+                    description="Ruff (I am now an admin in the courtroom!)",
                     color=0xffd700  # Gold color
                 )
                 embed.add_field(
                     name="Status",
-                    value="The bot can now perform admin actions including moderator management.",
+                    value="Ruff (I can now perform admin actions including moderator management.)",
                     inline=False
                 )
                 await self.discord_bot.bridge_channel.send(embed=embed)
         else:
             # Someone else received admin status, bot is no longer admin
             if self.is_admin:
-                print("👑 Bot is no longer admin")
+                print("👑 CourtDog is no longer admin")
                 self.is_admin = False
             
             # Someone else received admin status
