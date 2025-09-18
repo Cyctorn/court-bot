@@ -451,19 +451,19 @@ class DiscordCourtBot(discord.Client):
         @app_commands.describe(title="New title for the chatroom (1-150 characters)")
         async def title_command(interaction: discord.Interaction, title: str):
             """Change chatroom title (admin only)"""
-            await interaction.response.defer(ephemeral=True)
+            await interaction.response.defer(ephemeral=False)
 
             if not self.objection_bot.connected:
-                await interaction.followup.send("❌ Not connected to objection.lol", ephemeral=True)
+                await interaction.followup.send("❌ Not connected to objection.lol", ephemeral=False)
                 return
 
             if not self.objection_bot.is_admin:
-                await interaction.followup.send("❌ Need admin status in the courtroom to change the title", ephemeral=True)
+                await interaction.followup.send("❌ Need admin status in the courtroom to change the title", ephemeral=False)
                 return
 
             # Validate title length
             if not title or len(title) > 150:
-                await interaction.followup.send("❌ Title must be between 1 and 150 characters", ephemeral=True)
+                await interaction.followup.send("❌ Title must be between 1 and 150 characters", ephemeral=False)
                 return
 
             # Strip any potentially problematic characters
@@ -480,10 +480,10 @@ class DiscordCourtBot(discord.Client):
                     await interaction.followup.send(embed=embed, ephemeral=False)
                     print(f"[TITLE] Discord user {interaction.user.display_name} changed title to: {title}")
                 else:
-                    await interaction.followup.send("❌ Failed to update room title. Check bot status and permissions.", ephemeral=True)
+                    await interaction.followup.send("❌ Failed to update room title. Check bot status and permissions.", ephemeral=False)
             except Exception as e:
                 print(f"❌ Title command error: {e}")
-                await interaction.followup.send(f"❌ Failed to change title: {str(e)}", ephemeral=True)
+                await interaction.followup.send(f"❌ Failed to change title: {str(e)}", ephemeral=False)
 
         @self.tree.command(name="slowmode", description="Set room slow mode (admin only, requires 3 confirmations)")
         @app_commands.describe(seconds="Slow mode seconds (0-60, 0 = disabled)")
