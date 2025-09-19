@@ -289,6 +289,14 @@ class DiscordCourtBot(discord.Client):
         @self.tree.command(name="status", description="Check bridge status and list users in the courtroom")
         async def status(interaction: discord.Interaction):
             """Check bot status and list users"""
+            await interaction.response.defer(ephemeral=False)
+            
+            # Refresh room data before showing status if connected
+            if self.objection_bot.connected:
+                await self.objection_bot.refresh_room_data()
+                # Small delay to let the response come back
+                await asyncio.sleep(0.5)
+            
             users = list(self.objection_bot.user_names.values())
             user_count = len(users)
 
@@ -332,7 +340,7 @@ class DiscordCourtBot(discord.Client):
                     inline=False
                 )
 
-            await interaction.response.send_message(embed=embed, ephemeral=False)
+            await interaction.followup.send(embed=embed, ephemeral=False)
         @self.tree.command(name="reconnect", description="Attempt to reconnect to the objection.lol courtroom")
         async def reconnect(interaction: discord.Interaction):
             """Reconnect to objection.lol"""
@@ -2056,6 +2064,48 @@ class ObjectionBot:
             print(f"[TEXTBOX] Error updating textbox: {e}")
             return False
 
+    async def refresh_room_data(self):
+        """Refresh room data by sending get_room message"""
+        if not self.connected or not self.websocket:
+            print("[REFRESH] Cannot refresh - not connected")
+            return False
+        
+        try:
+            print("🔄 Refreshing room data...")
+            await self.websocket.send('42["get_room"]')
+            return True
+        except Exception as e:
+            print(f"[REFRESH] Error refreshing room data: {e}")
+            return False
+
+    async def transfer_ownership(self, target_user_id):
+        """Transfer room ownership to another user (owner only)"""
+        if not self.connected or not self.websocket:
+            print("[TRANSFER] Cannot transfer ownership - not connected")
+            return False
+        
+        if not self.is_admin:
+            print("[TRANSFER] Cannot transfer ownership - bot is not admin/owner")
+            return False
+        
+        try:
+            print(f"🔄 Transferring ownership to user: {target_user_id}")
+            message = f'42["owner_transfer","{target_user_id}"]'
+            await self.websocket.send(message)
+            print(f"[TRANSFER] Ownership transfer initiated for user: {target_user_id}")
+            return True
+        except Exception as e:
+            print(f"[TRANSFER] Error transferring ownership: {e}")
+            return False
+
+    def get_user_id_by_username(self, username):
+        """Get user ID by username (case-insensitive search)"""
+        username_lower = username.lower()
+        for user_id, stored_username in self.user_names.items():
+            if stored_username.lower() == username_lower:
+                return user_id
+        return None
+
 async def shutdown(objection_bot, discord_bot):
     print("Shutting down bots...")
     await objection_bot.disconnect()
@@ -2104,12 +2154,42 @@ async def terminal_command_listener(objection_bot, discord_bot):
                         print("❌ Not connected to objection.lol. Use 'reconnect' first.")
                 else:
                     print("❌ Please provide a message after 'say'. Example: say Hello everyone!")
+            elif cmd_lower.startswith("transfer "):
+                # Extract the username after "transfer "
+                username = cmd[9:].strip()  # Remove "transfer " prefix (preserving original case)
+                if username:
                     if objection_bot.connected:
-                        # Revert to original bot username when speaking as the bot itself
-                        original_username = objection_bot.config.get('objection', 'bot_username')
-                        await objection_bot.change_username_and_wait(original_username)
-                        await objection_bot.send_message(message)
-                        print(f"📤 Sent to courtroom: {message}")
+                        if objection_bot.is_admin:
+                            # Find user ID by username
+                            user_id = objection_bot.get_user_id_by_username(username)
+                            if user_id:
+                                print(f"🔄 Transferring ownership to '{username}' (ID: {user_id[:8]}...)")
+                                success = await objection_bot.transfer_ownership(user_id)
+                                if success:
+                                    print(f"✅ Ownership transfer initiated successfully!")
+                                    print(f"⚠️ Bot will no longer be admin after transfer completes.")
+                                else:
+                                    print(f"❌ Failed to transfer ownership.")
+                            else:
+                                print(f"❌ User '{username}' not found in courtroom.")
+                                print("Current users:")
+                                for uid, uname in objection_bot.user_names.items():
+                                    print(f"   - {uname} (ID: {uid[:8]}...)")
+                        else:
+                            print("❌ Bot is not admin/owner. Cannot transfer ownership.")
+                    else:
+                        print("❌ Not connected to objection.lol. Use 'reconnect' first.")
+                else:
+                    print("❌ Please provide a username after 'transfer'. Example: transfer JohnDoe")
+            elif cmd_lower == "help":
+                print("Available commands:")
+                print("  disconnect    - Disconnect from objection.lol")
+                print("  reconnect     - Reconnect to objection.lol")
+                print("  say <message> - Send a message to the courtroom")
+                print("  transfer <username> - Transfer ownership to user (admin only)")
+                print("  quit/exit/stop - Shutdown and exit")
+                print("  help          - Show this help message")
+            else:
                 print(f"Unknown command: {cmd_lower}. Type 'help' for available commands.")
         except (EOFError, KeyboardInterrupt):
             print("🛑 Terminal closed. Shutting down bots...")
