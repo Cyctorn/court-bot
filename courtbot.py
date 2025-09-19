@@ -9,6 +9,8 @@ import json
 import os
 import aioconsole
 import sys
+import aiohttp
+import re
 import signal
 import time
 import re
@@ -179,6 +181,52 @@ class Config:
         
         return errors
 class DiscordCourtBot(discord.Client):
+    async def fetch_music_url(self, bgm_id):
+        """Fetch the actual external URL for a BGM ID from objection.lol's API"""
+        try:
+            # Use the correct API endpoint discovered from testing
+            api_url = f"https://objection.lol/api/assets/music/{bgm_id}"
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.get(api_url) as response:
+                    if response.status == 200:
+                        music_data = await response.json()
+                        # Extract the external URL and music name from the response
+                        external_url = music_data.get('url')
+                        music_name = music_data.get('name', 'Unknown Track')
+                        volume = music_data.get('volume', 100)
+                        
+                        if external_url:
+                            # Handle relative URLs by converting them to full objection.lol URLs
+                            if external_url.startswith('/'):
+                                external_url = f"https://objection.lol{external_url}"
+                            
+                            print(f"🎵 Found music for BGM {bgm_id}: '{music_name}' -> {external_url}")
+                            return {
+                                'url': external_url,
+                                'name': music_name,
+                                'volume': volume,
+                                'id': bgm_id
+                            }
+                        else:
+                            print(f"❌ No URL found in BGM data for ID {bgm_id}")
+                            return None
+                    elif response.status == 404:
+                        print(f"❌ BGM ID {bgm_id} not found")
+                        return None
+                    else:
+                        print(f"❌ Failed to fetch BGM data for ID {bgm_id} (status: {response.status})")
+                        return None
+        except Exception as e:
+            print(f"❌ Error fetching music URL for ID {bgm_id}: {e}")
+            return None
+
+    def extract_bgm_commands(self, text):
+        """Extract BGM IDs from text containing [#bgm123456] commands"""
+        bgm_pattern = r'\[#bgm(\d+)\]'
+        matches = re.findall(bgm_pattern, text)
+        return matches
+
     def strip_color_codes(self, text):
         """Remove objection.lol color codes from text"""
         import re
@@ -739,7 +787,7 @@ class DiscordCourtBot(discord.Client):
             )
             embed.add_field(
                 name="Admin Commands",
-                value="/titlebar - Change chatroom title (admin only)\n/slowmode - Set slow mode (requires 3 confirmations)\n/setpassword - Set password to THE USUAL (requires 3 confirmations)\n/text - Change textbox appearance (admin only)",
+                value="/titlebar - Change courtroom title\n/slowmode - Set slow mode (requires 3 confirmations)\n/setpassword - Set password to THE USUAL (requires 3 confirmations)\n/text - Change textbox appearance",
                 inline=False
             )
             embed.add_field(
@@ -855,6 +903,42 @@ class DiscordCourtBot(discord.Client):
         if self.bridge_channel:
             # Strip color codes before sending to Discord
             cleaned_message = self.strip_color_codes(message)
+            
+            # Check for BGM commands and fetch music URLs
+            bgm_ids = self.extract_bgm_commands(message)
+            if bgm_ids:
+                for bgm_id in bgm_ids:
+                    music_data = await self.fetch_music_url(bgm_id)
+                    if music_data:
+                        # Send the music URL as a rich embed with all available info
+                        music_embed = discord.Embed(
+                            title="🎵 Background Music",
+                            description=f"**{username}** played music",
+                            color=0x9b59b6
+                        )
+                        music_embed.add_field(
+                            name="Track Name",
+                            value=music_data['name'],
+                            inline=True
+                        )
+                        music_embed.add_field(
+                            name="Track ID", 
+                            value=f"#{music_data['id']}",
+                            inline=True
+                        )
+                        music_embed.add_field(
+                            name="Volume",
+                            value=f"{music_data['volume']}%",
+                            inline=True
+                        )
+                        music_embed.add_field(
+                            name="Audio File",
+                            value=music_data['url'],
+                            inline=False
+                        )
+                        await self.bridge_channel.send(embed=music_embed)
+                        print(f"🎵 Posted music info for BGM {bgm_id}: '{music_data['name']}' -> {music_data['url']}")
+            
             unix_timestamp = int(time.time())
             formatted_message = f"**{username}**:\n{cleaned_message}\n-# <t:{unix_timestamp}:T>"
             sent_message = await self.bridge_channel.send(formatted_message)
