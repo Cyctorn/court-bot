@@ -955,8 +955,9 @@ class ObjectionBot:
                     print("🏠 Sending 'get_room' message...")
                     await self.websocket.send('42["get_room"]')
                     
-                    # Start the message processing loop only - let server handle ping/pong
+                    # Start the message processing loop and connection monitor
                     asyncio.create_task(self.message_loop())
+                    asyncio.create_task(self.start_connection_monitor())
                     
                     return True
                 else:
@@ -976,19 +977,55 @@ class ObjectionBot:
             return False
     
     async def message_loop(self):
-        """Main message processing loop"""
+        """Main message processing loop with enhanced disconnection detection"""
         try:
             async for message in self.websocket:
                 await self.process_message(message)
-        except websockets.exceptions.ConnectionClosed:
-            print("🔌 WebSocket connection closed")
+        except websockets.exceptions.ConnectionClosed as e:
+            print(f"🔌 WebSocket connection closed: {e}")
             self.connected = False
+            if self.websocket:
+                try:
+                    await self.websocket.close()
+                except:
+                    pass
+                self.websocket = None
+            # Start auto-reconnect if enabled
+            if self.auto_reconnect:
+                await self.start_auto_reconnect()
+        except websockets.exceptions.ConnectionClosedError as e:
+            print(f"🔌 WebSocket connection closed with error: {e}")
+            self.connected = False
+            if self.websocket:
+                try:
+                    await self.websocket.close()
+                except:
+                    pass
+                self.websocket = None
+            # Start auto-reconnect if enabled
+            if self.auto_reconnect:
+                await self.start_auto_reconnect()
+        except websockets.exceptions.ConnectionClosedOK as e:
+            print(f"🔌 WebSocket connection closed normally: {e}")
+            self.connected = False
+            if self.websocket:
+                try:
+                    await self.websocket.close()
+                except:
+                    pass
+                self.websocket = None
             # Start auto-reconnect if enabled
             if self.auto_reconnect:
                 await self.start_auto_reconnect()
         except Exception as e:
             print(f"❌ Error in message loop: {e}")
             self.connected = False
+            if self.websocket:
+                try:
+                    await self.websocket.close()
+                except:
+                    pass
+                self.websocket = None
             # Start auto-reconnect if enabled
             if self.auto_reconnect:
                 await self.start_auto_reconnect()
@@ -1106,8 +1143,14 @@ class ObjectionBot:
             
             elif message.startswith('2'):
                 # Ping message from server, respond with pong
-                await self.websocket.send("3")
-                print("📡 Received ping, sent pong")
+                try:
+                    await self.websocket.send("3")
+                    print("📡 Received ping, sent pong")
+                except Exception as e:
+                    print(f"❌ Failed to send pong: {e}")
+                    # If we can't send pong, connection is probably dead
+                    self.connected = False
+                    raise websockets.exceptions.ConnectionClosed(None, None)
                 
             elif message.startswith('3'):
                 # Pong message from server (response to our ping)
@@ -1594,7 +1637,7 @@ class ObjectionBot:
         print("✅ Graceful disconnect completed")
     
     async def send_message(self, text):
-        """Send a message to the chatroom"""
+        """Send a message to the chatroom with enhanced connection checking"""
         if not self.connected:
             print("❌ Not connected - cannot send message")
             # Trigger auto-reconnect if not already in progress
@@ -1602,9 +1645,9 @@ class ObjectionBot:
                 await self.start_auto_reconnect()
             return False
             
-        # Check if socket is actually connected before sending
-        if not self.websocket or self.websocket.close_code is not None:
-            print("❌ WebSocket connection lost - cannot send message")
+        # Check connection health before attempting to send
+        if not await self.check_connection_health():
+            print("❌ Connection health check failed - marking as disconnected")
             self.connected = False
             # Trigger auto-reconnect if not already in progress
             if self.auto_reconnect:
@@ -1823,344 +1866,50 @@ class ObjectionBot:
                 return user_id
         return None
 
-async def shutdown(objection_bot, discord_bot):
-    print("Shutting down bots...")
-    await objection_bot.disconnect()
-    await discord_bot.close()
-    print("Bots disconnected. Exiting.")
-    sys.exit(0)
-
-def setup_signal_handlers(loop, objection_bot, discord_bot):
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        try:
-            loop.add_signal_handler(sig, lambda: asyncio.create_task(shutdown(objection_bot, discord_bot)))
-        except NotImplementedError:
-            # add_signal_handler may not be implemented on Windows event loop
-            pass
-
-async def terminal_command_listener(objection_bot, discord_bot):
-    """Listen for terminal commands and handle them."""
-    while True:
-        try:
-            cmd = (await aioconsole.ainput("CourtBot> ")).strip()
-            cmd_lower = cmd.lower()
+    async def check_connection_health(self):
+        """Check if the WebSocket connection is still healthy"""
+        if not self.websocket:
+            return False
             
-            if cmd_lower == "disconnect":
-                print("🛑 Disconnect command received. Disconnecting bots (but script will keep running)...")
-                await objection_bot.disconnect()
-                print("✅ Bots disconnected. Script is still running. Type 'reconnect' to reconnect or 'quit' to exit.")
-            elif cmd_lower in ["quit", "exit", "stop"]:
-                print("🛑 Quit command received. Shutting down bots and exiting...")
-                await shutdown(objection_bot, discord_bot)
-            elif cmd_lower == "reconnect":
-                print("🔄 Reconnect command received. Attempting to reconnect...")
-                await objection_bot.connect_to_room()
-                print("✅ Reconnection attempted.")
-            elif cmd_lower.startswith("say "):
-                # Extract the message after "say "
-                message = cmd[4:]  # Remove "say " prefix (preserving original case)
-                if message.strip():
-                    if objection_bot.connected:
-                        # Revert to original bot username when speaking as the bot itself
-                        original_username = objection_bot.config.get('objection', 'bot_username')
-                        await objection_bot.change_username_and_wait(original_username)
-                        # Small delay after username change before sending message
-                        await objection_bot.send_message(message)
-                        print(f"📤 Sent to courtroom: {message}")
-                    else:
-                        print("❌ Not connected to objection.lol. Use 'reconnect' first.")
-                else:
-                    print("❌ Please provide a message after 'say'. Example: say Hello everyone!")
-            elif cmd_lower.startswith("transfer "):
-                # Extract the username after "transfer "
-                username = cmd[9:].strip()  # Remove "transfer " prefix (preserving original case)
-                if username:
-                    if objection_bot.connected:
-                        if objection_bot.is_admin:
-                            # Find user ID by username
-                            user_id = objection_bot.get_user_id_by_username(username)
-                            if user_id:
-                                print(f"🔄 Transferring ownership to '{username}' (ID: {user_id[:8]}...)")
-                                success = await objection_bot.transfer_ownership(user_id)
-                                if success:
-                                    print(f"✅ Ownership transfer initiated successfully!")
-                                    print(f"⚠️ Bot will no longer be admin after transfer completes.")
-                                else:
-                                    print(f"❌ Failed to transfer ownership.")
-                            else:
-                                print(f"❌ User '{username}' not found in courtroom.")
-                                print("Current users:")
-                                for uid, uname in objection_bot.user_names.items():
-                                    print(f"   - {uname} (ID: {uid[:8]}...)")
-                        else:
-                            print("❌ Bot is not admin/owner. Cannot transfer ownership.")
-                    else:
-                        print("❌ Not connected to objection.lol. Use 'reconnect' first.")
-                else:
-                    print("❌ Please provide a username after 'transfer'. Example: transfer JohnDoe")
-            elif cmd_lower == "status":
-                # Show detailed bot status
-                print("🤖 Bot Status:")
-                print(f"   Objection.lol: {'🟢 Connected' if objection_bot.connected else '🔴 Disconnected'}")
-                print(f"   Discord: {'🟢 Connected' if not discord_bot.is_closed() else '🔴 Disconnected'}")
-                print(f"   Admin Status: {'🛡️ Yes' if objection_bot.is_admin else '❌ No'}")
-                print(f"   Room ID: {objection_bot.room_id}")
-                print(f"   Bot Username: {objection_bot.username}")
-                print(f"   Users in Room: {len(objection_bot.user_names)}")
-                if objection_bot.current_mods:
-                    mod_names = [objection_bot.user_names.get(mod_id, f"User-{mod_id[:8]}") for mod_id in objection_bot.current_mods]
-                    print(f"   Moderators: {', '.join(mod_names)}")
-                else:
-                    print(f"   Moderators: None")
-                print(f"   Reconnect Attempts: {objection_bot.reconnect_attempts}/{objection_bot.max_reconnect_attempts}")
-            elif cmd_lower == "users":
-                # List all users in the courtroom
-                if objection_bot.user_names:
-                    print(f"👥 Users in Courtroom ({len(objection_bot.user_names)}):")
-                    for user_id, username in objection_bot.user_names.items():
-                        status_indicators = []
-                        if user_id == objection_bot.user_id:
-                            status_indicators.append("🤖 Bot")
-                        if user_id in objection_bot.current_mods:
-                            status_indicators.append("🛡️ Mod")
-                        status_text = f" ({', '.join(status_indicators)})" if status_indicators else ""
-                        print(f"   - {username}{status_text} (ID: {user_id[:8]}...)")
-                else:
-                    print("👥 No users found in courtroom")
-            elif cmd_lower == "refresh":
-                # Refresh room data
-                if objection_bot.connected:
-                    print("🔄 Refreshing room data...")
-                    success = await objection_bot.refresh_room_data()
-                    if success:
-                        await asyncio.sleep(1)  # Wait for response
-                        print(f"✅ Room data refreshed. Found {len(objection_bot.user_names)} users.")
-                    else:
-                        print("❌ Failed to refresh room data.")
-                else:
-                    print("❌ Not connected to objection.lol. Use 'reconnect' first.")
-            elif cmd_lower.startswith("title "):
-                # Change room title
-                title = cmd[6:].strip()  # Remove "title " prefix
-                if title:
-                    if objection_bot.connected:
-                        if objection_bot.is_admin:
-                            print(f"📝 Changing room title to: '{title}'")
-                            success = await objection_bot.update_room_title(title)
-                            if success:
-                                print("✅ Room title updated successfully!")
-                            else:
-                                print("❌ Failed to update room title.")
-                        else:
-                            print("❌ Bot is not admin. Cannot change room title.")
-                    else:
-                        print("❌ Not connected to objection.lol. Use 'reconnect' first.")
-                else:
-                    print("❌ Please provide a title after 'title'. Example: title My Awesome Courtroom")
-            elif cmd_lower.startswith("slowmode "):
-                # Set slow mode
-                try:
-                    seconds = int(cmd[9:].strip())  # Remove "slowmode " prefix
-                    if 0 <= seconds <= 60:
-                        if objection_bot.connected:
-                            if objection_bot.is_admin:
-                                if seconds == 0:
-                                    print("⏱️ Disabling slow mode...")
-                                else:
-                                    print(f"⏱️ Setting slow mode to {seconds} seconds...")
-                                success = await objection_bot.update_room_slowmode(seconds)
-                                if success:
-                                    print("✅ Slow mode updated successfully!")
-                                else:
-                                    print("❌ Failed to update slow mode.")
-                            else:
-                                print("❌ Bot is not admin. Cannot change slow mode.")
-                        else:
-                            print("❌ Not connected to objection.lol. Use 'reconnect' first.")
-                    else:
-                        print("❌ Slow mode seconds must be between 0 and 60.")
-                except ValueError:
-                    print("❌ Please provide a valid number after 'slowmode'. Example: slowmode 5")
-            elif cmd_lower.startswith("textbox "):
-                # Change textbox style
-                style = cmd[8:].strip()  # Remove "textbox " prefix
-                if style:
-                    if objection_bot.connected:
-                        if objection_bot.is_admin:
-                            print(f"🎨 Changing textbox style to: '{style}'")
-                            success = await objection_bot.update_room_textbox(style)
-                            if success:
-                                print("✅ Textbox style updated successfully!")
-                            else:
-                                print("❌ Failed to update textbox style.")
-                        else:
-                            print("❌ Bot is not admin. Cannot change textbox style.")
-                    else:
-                        print("❌ Not connected to objection.lol. Use 'reconnect' first.")
-                else:
-                    print("❌ Please provide a style after 'textbox'. Example: textbox aa-trilogy")
-            elif cmd_lower.startswith("aspect "):
-                # Change aspect ratio
-                ratio = cmd[7:].strip()  # Remove "aspect " prefix
-                if ratio:
-                    valid_ratios = ["3:2", "4:3", "16:9", "16:10"]
-                    if ratio in valid_ratios:
-                        if objection_bot.connected:
-                            if objection_bot.is_admin:
-                                print(f"📐 Changing aspect ratio to: '{ratio}'")
-                                success = await objection_bot.update_room_aspect_ratio(ratio)
-                                if success:
-                                    print("✅ Aspect ratio updated successfully!")
-                                else:
-                                    print("❌ Failed to update aspect ratio.")
-                            else:
-                                print("❌ Bot is not admin. Cannot change aspect ratio.")
-                        else:
-                            print("❌ Not connected to objection.lol. Use 'reconnect' first.")
-                    else:
-                        print(f"❌ Invalid aspect ratio '{ratio}'. Valid options: {', '.join(valid_ratios)}")
-                else:
-                    print("❌ Please provide an aspect ratio after 'aspect'. Example: aspect 16:9")
-            elif cmd_lower == "config":
-                # Show current configuration
-                print("⚙️ Current Configuration:")
-                print(f"   Room ID: {objection_bot.config.get('objection', 'room_id')}")
-                print(f"   Bot Username: {objection_bot.config.get('objection', 'bot_username')}")
-                print(f"   Character ID: {objection_bot.config.get('settings', 'character_id')}")
-                print(f"   Pose ID: {objection_bot.config.get('settings', 'pose_id')}")
-                print(f"   Mode: {objection_bot.config.get('settings', 'mode')}")
-                print(f"   Auto-reconnect: {objection_bot.auto_reconnect}")
-                print(f"   Max reconnect attempts: {objection_bot.max_reconnect_attempts}")
-                discord_config = objection_bot.config.get('discord')
-                if discord_config:
-                    print(f"   Discord Channel ID: {discord_config.get('channel_id')}")
-                    print(f"   Discord Guild ID: {discord_config.get('guild_id')}")
-            elif cmd_lower == "debug":
-                # Show debug information
-                print("🐛 Debug Information:")
-                print(f"   WebSocket State: {objection_bot.websocket.state if objection_bot.websocket else 'None'}")
-                print(f"   WebSocket Close Code: {objection_bot.websocket.close_code if objection_bot.websocket else 'None'}")
-                print(f"   User ID: {objection_bot.user_id}")
-                print(f"   Pending Username: {objection_bot._pending_username}")
-                print(f"   Pending Pair Request: {bool(objection_bot._pending_pair_request)}")
-                print(f"   Message Queue Size: {objection_bot.message_queue.qsize()}")
-                print(f"   Discord Nicknames: {len(discord_bot.nicknames)} users")
-                print(f"   Discord Colors: {len(discord_bot.colors)} users")
-                if objection_bot.reconnect_task:
-                    print(f"   Reconnect Task: {objection_bot.reconnect_task.done()}")
-            elif cmd_lower == "clear":
-                # Clear the terminal
-                import os
-                os.system('cls' if os.name == 'nt' else 'clear')
-                print("🤖 CourtBot Terminal - Type 'help' for commands")
-            elif cmd_lower.startswith("ws ") or cmd_lower.startswith("websocket "):
-                # Send raw WebSocket message
-                prefix_len = 3 if cmd_lower.startswith("ws ") else 10  # "ws " or "websocket "
-                raw_message = cmd[prefix_len:].strip()
-                if raw_message:
-                    if objection_bot.connected:
-                        try:
-                            await objection_bot.websocket.send(raw_message)
-                            print(f"📡 Sent raw WebSocket message: {raw_message}")
-                        except Exception as e:
-                            print(f"❌ Failed to send WebSocket message: {e}")
-                    else:
-                        print("❌ Not connected to objection.lol. Use 'reconnect' first.")
-                else:
-                    print("❌ Please provide a WebSocket message. Examples:")
-                    print("   ws 42[\"get_room\"]")
-                    print("   ws 42[\"message\",{\"characterId\":1,\"poseId\":1,\"text\":\"Hello\"}]")
-                    print("   ws 2  (ping)")
-                    print("   ws 3  (pong)")
-                    print("   ws 40  (handshake ack)")
-            elif cmd_lower == "help":
-                print("Available commands:")
-                print("\n🔗 Connection:")
-                print("  connect/reconnect - Reconnect to objection.lol")
-                print("  disconnect        - Disconnect from objection.lol")
-                print("  status           - Show detailed bot status")
-                print("  refresh          - Refresh room data")
-                print("\n💬 Communication:")
-                print("  say <message>    - Send a message to the courtroom")
-                print("\n👥 User Management:")
-                print("  users            - List all users in courtroom")
-                print("  transfer <user>  - Transfer ownership to user (admin only)")
-                print("\n� Advanced:")
-                print("  ws <message>     - Send raw WebSocket message")
-                print("  websocket <msg>  - Send raw WebSocket message (alias)")
-                print("\n�🛠️ Utility:")
-                print("  config           - Show current configuration")
-                print("  debug            - Show debug information")
-                print("  clear            - Clear terminal screen")
-                print("  help             - Show this help message")
-                print("  quit/exit/stop   - Shutdown and exit")
-            else:
-                print(f"Unknown command: {cmd_lower}. Type 'help' for available commands.")
-        except (EOFError, KeyboardInterrupt):
-            print("🛑 Terminal closed. Shutting down bots...")
-            await shutdown(objection_bot, discord_bot)
-async def main():
-    # Load configuration
-    config = Config()
-    # Validate configuration
-    errors = config.validate()
-    if errors:
-        print("❌ Configuration errors found:")
-        for error in errors:
-            print(f"   - {error}")
-        print("\nPlease fix the configuration file and restart the bot.")
-        return
-    print("📋 Configuration loaded successfully!")
-    print(f"🏠 Room: {config.get('objection', 'room_id')}")
-    print(f"🤖 Username: {config.get('objection', 'bot_username')}")
-    print(f"🎭 Mode: {config.get('settings', 'mode')}")
-    # Create bots
-    objection_bot = ObjectionBot(config)
-    discord_bot = DiscordCourtBot(objection_bot, config)
-    # Link them together
-    objection_bot.set_discord_bot(discord_bot)
-    print("🔌 Attempting to connect to objection.lol...")
-    objection_success = await objection_bot.connect_to_room()
-    if objection_success:
-        print("✅ Objection.lol connection successful!")
-        # Start Discord bot in background
-        print("🔌 Starting Discord bot...")
-        discord_task = asyncio.create_task(discord_bot.start(config.get('discord', 'token')))
-        # Start terminal command listener in background
-        terminal_task = asyncio.create_task(terminal_command_listener(objection_bot, discord_bot))
+        # Check if websocket is closed
+        if self.websocket.close_code is not None:
+            print(f"🔌 WebSocket closed with code: {self.websocket.close_code}")
+            return False
+            
+        # Check websocket state
+        if hasattr(self.websocket, 'state'):
+            state = self.websocket.state
+            if state != websockets.protocol.State.OPEN:
+                print(f"🔌 WebSocket not in OPEN state: {state}")
+                return False
         
-        # Setup signal handlers for graceful shutdown
-        setup_signal_handlers(asyncio.get_running_loop(), objection_bot, discord_bot)
-        
-        # Send initial greeting
-        await asyncio.sleep(3)  # Wait for Discord bot to connect
-        # Revert to original bot username for initial greeting
-        original_username = objection_bot.config.get('objection', 'bot_username')
-        await objection_bot.change_username_and_wait(original_username)
-        await objection_bot.send_message("[#bgs20412]Ruff (Relaying messages)")
-        
-        # Choose mode based on configuration
-        mode = config.get('settings', 'mode')
-        if mode == "interactive":
-            print("💬 Interactive mode enabled")
-            await objection_bot.interactive_mode()
-        else:
-            print("🌉 Bridge mode active. Messages will be relayed between Discord and Objection.lol")
-            print("Press Ctrl+C to stop the bot")
-        
+        # Try sending a ping to test the connection
         try:
-            # Keep both bots running
-            await asyncio.gather(
-                discord_task,
-                objection_bot.keep_alive(),
-                terminal_task
-            )
-        except KeyboardInterrupt:
-            print("\n🛑 Stopping bots...")
-            discord_task.cancel()
-            terminal_task.cancel()
-            await shutdown(objection_bot, discord_bot)
-    else:
-        print("❌ Failed to connect to objection.lol")
-if __name__ == "__main__":
-    asyncio.run(main())
+            await self.websocket.ping()
+            return True
+        except Exception as e:
+            print(f"🔌 Connection health check failed: {e}")
+            return False
+
+    async def start_connection_monitor(self):
+        """Start a background task to monitor connection health"""
+        async def connection_monitor():
+            while self.auto_reconnect:
+                await asyncio.sleep(30)  # Check every 30 seconds
+                
+                if self.connected:
+                    if not await self.check_connection_health():
+                        print("🔌 Connection monitor detected stale connection")
+                        self.connected = False
+                        if self.websocket:
+                            try:
+                                await self.websocket.close()
+                            except:
+                                pass
+                            self.websocket = None
+                        # Trigger auto-reconnect
+                        if self.auto_reconnect:
+                            await self.start_auto_reconnect()
+        
+        # Start the monitor task
+        asyncio.create_task(connection_monitor())
