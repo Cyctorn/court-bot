@@ -532,284 +532,15 @@ class DiscordCourtBot(discord.Client):
                 await interaction.followup.send(f"❌ Failed to execute shaba command: {str(e)}", ephemeral=True)
 
         # Admin Commands Section
-        @self.tree.command(name="titlebar", description="Change the chatroom title (admin only)")
-        @app_commands.describe(title="New title for the chatroom (1-150 characters)")
-        async def titlebar_command(interaction: discord.Interaction, title: str):
-            """Change chatroom title (admin only)"""
-            await interaction.response.defer(ephemeral=False)
+        # Admin commands removed - this is a junior bot with no admin functionality
 
-            if not self.objection_bot.connected:
-                await interaction.followup.send("❌ Not connected to objection.lol", ephemeral=False)
-                return
+        # Slowmode command removed - this is a junior bot with no admin functionality
 
-            if not self.objection_bot.is_admin:
-                await interaction.followup.send("❌ Need admin status in the courtroom to change the title", ephemeral=False)
-                return
+        # Setpassword command removed - this is a junior bot with no admin functionality
 
-            # Validate title length
-            if not title or len(title) > 150:
-                await interaction.followup.send("❌ Title must be between 1 and 150 characters", ephemeral=False)
-                return
+        # Text command removed - this is a junior bot with no admin functionality
 
-            # Strip any potentially problematic characters
-            title = title.strip()
-
-            try:
-                success = await self.objection_bot.update_room_title(title)
-                if success:
-                    embed = discord.Embed(
-                        title="✅ Title Updated",
-                        description=f"Successfully changed room title to: **{title}**",
-                        color=0x00ff00
-                    )
-                    await interaction.followup.send(embed=embed, ephemeral=False)
-                    print(f"[TITLE] Discord user {interaction.user.display_name} changed title to: {title}")
-                else:
-                    await interaction.followup.send("❌ Failed to update room title. Check bot status and permissions.", ephemeral=False)
-            except Exception as e:
-                print(f"❌ Title command error: {e}")
-                await interaction.followup.send(f"❌ Failed to change title: {str(e)}", ephemeral=False)
-
-        @self.tree.command(name="slowmode", description="Set room slow mode (admin only, requires 3 confirmations)")
-        @app_commands.describe(seconds="Slow mode seconds (0-60, 0 = disabled)")
-        async def slowmode_command(interaction: discord.Interaction, seconds: int):
-            """Set room slow mode (admin only, requires confirmations)"""
-            await interaction.response.defer(ephemeral=True)
-
-            if not self.objection_bot.connected:
-                await interaction.followup.send("❌ Not connected to objection.lol", ephemeral=True)
-                return
-
-            if not self.objection_bot.is_admin:
-                await interaction.followup.send("❌ Need admin status in the courtroom to change slow mode", ephemeral=True)
-                return
-
-            # Validate seconds range
-            if seconds < 0 or seconds > 60:
-                await interaction.followup.send("❌ Slow mode seconds must be between 0 and 60", ephemeral=True)
-                return
-
-            # Create voting embed
-            if seconds == 0:
-                embed = discord.Embed(
-                    title="⚠️ Disable Slow Mode",
-                    description="**This action requires 3 user confirmations**\n\nProposed change: **Disable slow mode**",
-                    color=0xff9500
-                )
-            else:
-                embed = discord.Embed(
-                    title="⚠️ Enable Slow Mode", 
-                    description=f"**This action requires 3 user confirmations**\n\nProposed change: **{seconds} second** slow mode",
-                    color=0xff9500
-                )
-            
-            embed.add_field(
-                name="Instructions",
-                value="React with ✅ to confirm this action. Need 4 total reactions (including bot).",
-                inline=False
-            )
-            embed.add_field(
-                name="Initiated by",
-                value=f"{interaction.user.display_name}",
-                inline=True
-            )
-
-            message = await self.bridge_channel.send(embed=embed)
-            await message.add_reaction("✅")
-            
-            await interaction.followup.send(f"✅ Slow mode vote initiated. Need 3 more confirmations.", ephemeral=True)
-            
-            # Wait for reactions
-            def check(reaction, user):
-                return (reaction.message.id == message.id and 
-                       str(reaction.emoji) == "✅" and 
-                       not user.bot and
-                       reaction.count >= 4)  # Bot + 3 users
-            
-            try:
-                await self.objection_bot.discord_bot.wait_for('reaction_add', timeout=300.0, check=check)
-                
-                # Execute the slow mode change
-                success = await self.objection_bot.update_room_slowmode(seconds)
-                if success:
-                    if seconds == 0:
-                        result_embed = discord.Embed(
-                            title="✅ Slow Mode Disabled",
-                            description="Slow mode has been disabled in the courtroom",
-                            color=0x00ff00
-                        )
-                    else:
-                        result_embed = discord.Embed(
-                            title="✅ Slow Mode Enabled",
-                            description=f"Slow mode set to **{seconds} seconds** in the courtroom",
-                            color=0x00ff00
-                        )
-                    await message.edit(embed=result_embed)
-                else:
-                    error_embed = discord.Embed(
-                        title="❌ Failed",
-                        description="Failed to update slow mode. Check bot status and permissions.",
-                        color=0xff0000
-                    )
-                    await message.edit(embed=error_embed)
-            except asyncio.TimeoutError:
-                timeout_embed = discord.Embed(
-                    title="⏰ Vote Expired",
-                    description="Slow mode vote timed out after 5 minutes",
-                    color=0x808080
-                )
-                await message.edit(embed=timeout_embed)
-
-        @self.tree.command(name="setpassword", description="Set room password to THE USUAL (admin only, requires 3 confirmations)")
-        async def setpassword_command(interaction: discord.Interaction):
-            """Set room password (admin only, requires confirmations)"""
-            await interaction.response.defer(ephemeral=True)
-
-            if not self.objection_bot.connected:
-                await interaction.followup.send("❌ Not connected to objection.lol", ephemeral=True)
-                return
-
-            if not self.objection_bot.is_admin:
-                await interaction.followup.send("❌ Need admin status in the courtroom to change password", ephemeral=True)
-                return
-
-            # Create voting embed
-            embed = discord.Embed(
-                title="⚠️ Set Emergency Password",
-                description="**This action requires 3 user confirmations**\n\nProposed change: **Set password to THE USUAL**",
-                color=0xff9500
-            )
-            embed.add_field(
-                name="Instructions",
-                value="React with ✅ to confirm this action. Need 4 total reactions (including bot).",
-                inline=False
-            )
-            embed.add_field(
-                name="Initiated by",
-                value=f"{interaction.user.display_name}",
-                inline=True
-            )
-
-            message = await self.bridge_channel.send(embed=embed)
-            await message.add_reaction("✅")
-            
-            await interaction.followup.send(f"✅ Password change vote initiated. Need 3 more confirmations.", ephemeral=True)
-            
-            # Wait for reactions
-            def check(reaction, user):
-                return (reaction.message.id == message.id and 
-                       str(reaction.emoji) == "✅" and 
-                       not user.bot and
-                       reaction.count >= 4)  # Bot + 3 users
-            
-            try:
-                await self.objection_bot.discord_bot.wait_for('reaction_add', timeout=300.0, check=check)
-                
-                # Execute the password change
-                success = await self.objection_bot.update_room_password("sneedemfeedem")
-                if success:
-                    result_embed = discord.Embed(
-                        title="✅ Password Set",
-                        description="Room password has been set to **THE USUAL**",
-                        color=0x00ff00
-                    )
-                    await message.edit(embed=result_embed)
-                else:
-                    error_embed = discord.Embed(
-                        title="❌ Failed",
-                        description="Failed to update room password. Check bot status and permissions.",
-                        color=0xff0000
-                    )
-                    await message.edit(embed=error_embed)
-            except asyncio.TimeoutError:
-                timeout_embed = discord.Embed(
-                    title="⏰ Vote Expired",
-                    description="Password change vote timed out after 5 minutes",
-                    color=0x808080
-                )
-                await message.edit(embed=timeout_embed)
-
-        @self.tree.command(name="text", description="Change the chatroom textbox appearance (admin only)")
-        @app_commands.describe(style="Textbox style (preset name or custom ID)")
-        async def text_command(interaction: discord.Interaction, style: str):
-            """Change chatroom textbox appearance (admin only)"""
-            await interaction.response.defer(ephemeral=False)
-
-            if not self.objection_bot.connected:
-                await interaction.followup.send("❌ Not connected to objection.lol", ephemeral=False)
-                return
-
-            if not self.objection_bot.is_admin:
-                await interaction.followup.send("❌ Need admin status in the courtroom to change the textbox", ephemeral=False)
-                return
-
-            # Check if it's a preset textbox name
-            preset_textbox = PRESET_TEXTBOXES.get(style.lower())
-            if preset_textbox:
-                textbox_id = preset_textbox
-                style_name = style.lower()
-            else:
-                # Use the provided style as a custom ID
-                textbox_id = style.strip()
-                style_name = f"custom ID: {textbox_id}"
-
-            if not textbox_id:
-                # Show available preset textboxes in error message
-                preset_list = ', '.join(PRESET_TEXTBOXES.keys())
-                await interaction.followup.send(f"❌ Style must be a preset name or custom textbox ID.\n\n**Available presets:** {preset_list}", ephemeral=False)
-                return
-
-            try:
-                success = await self.objection_bot.update_room_textbox(textbox_id)
-                if success:
-                    embed = discord.Embed(
-                        title="✅ Textbox Updated",
-                        description=f"Successfully changed textbox to: **{style_name}**",
-                        color=0x00ff00
-                    )
-                    await interaction.followup.send(embed=embed, ephemeral=False)
-                    print(f"[TEXTBOX] Discord user {interaction.user.display_name} changed textbox to: {style_name}")
-                else:
-                    await interaction.followup.send("❌ Failed to update textbox. Check bot status and permissions.", ephemeral=False)
-            except Exception as e:
-                print(f"❌ Textbox command error: {e}")
-                await interaction.followup.send(f"❌ Failed to change textbox: {str(e)}", ephemeral=False)
-
-        @self.tree.command(name="aspect", description="Change the chatroom aspect ratio (admin only)")
-        @app_commands.describe(ratio="Aspect ratio (3:2, 4:3, 16:9, 16:10)")
-        @app_commands.choices(ratio=[
-            app_commands.Choice(name="3:2", value="3:2"),
-            app_commands.Choice(name="4:3", value="4:3"), 
-            app_commands.Choice(name="16:9", value="16:9"),
-            app_commands.Choice(name="16:10", value="16:10")
-        ])
-        async def aspect_command(interaction: discord.Interaction, ratio: app_commands.Choice[str]):
-            """Change chatroom aspect ratio (admin only)"""
-            await interaction.response.defer(ephemeral=False)
-
-            if not self.objection_bot.connected:
-                await interaction.followup.send("❌ Not connected to objection.lol", ephemeral=False)
-                return
-
-            if not self.objection_bot.is_admin:
-                await interaction.followup.send("❌ Need admin status in the courtroom to change the aspect ratio", ephemeral=False)
-                return
-
-            try:
-                success = await self.objection_bot.update_room_aspect_ratio(ratio.value)
-                if success:
-                    embed = discord.Embed(
-                        title="✅ Aspect Ratio Updated",
-                        description=f"Successfully changed aspect ratio to: **{ratio.value}**",
-                        color=0x00ff00
-                    )
-                    await interaction.followup.send(embed=embed, ephemeral=False)
-                    print(f"[ASPECT] Discord user {interaction.user.display_name} changed aspect ratio to: {ratio.value}")
-                else:
-                    await interaction.followup.send("❌ Failed to update aspect ratio. Check bot status and permissions.", ephemeral=False)
-            except Exception as e:
-                print(f"❌ Aspect ratio command error: {e}")
-                await interaction.followup.send(f"❌ Failed to change aspect ratio: {str(e)}", ephemeral=False)
+        # Aspect command removed - this is a junior bot with no admin functionality
 
     async def on_ready(self):
         print(f'🤖 Discord bot logged in as {self.user}')
@@ -1133,30 +864,7 @@ class DiscordCourtBot(discord.Client):
             return
         # Pairing request handling removed - bot will handle automatically
 
-    async def send_mod_request_to_discord(self, user_id, username, objection_bot):
-        """Send a moderator request to Discord for approval"""
-        if not self.bridge_channel:
-            print("[MOD] No bridge channel to send mod request.")
-            return
-        
-        embed = discord.Embed(
-            title="🛡️ Moderator Request",
-            description=f"Ruff (**{username}** has requested moderator status)",
-            color=0xff9500  # Orange color
-        )
-        embed.add_field(
-            name="User Info",
-            value=f"Username: {username}\nUser ID: `{user_id[:8]}...`",
-            inline=False
-        )
-        embed.add_field(
-            name="Action Required",
-            value="Click the button below to grant moderator status to this user.",
-            inline=False
-        )
-        
-        view = ModRequestView(user_id, username, objection_bot)
-        await self.bridge_channel.send(embed=embed, view=view)
+        # Moderator request functionality removed - this is a junior bot with no admin functionality
 
 class PairingView(discord.ui.View):
     def __init__(self, pair_data, objection_bot):
@@ -1185,58 +893,7 @@ class PairingView(discord.ui.View):
         self.response_sent = True
         self.stop()
 
-class ModRequestView(discord.ui.View):
-    def __init__(self, user_id, username, objection_bot):
-        super().__init__(timeout=300)  # 5 minutes timeout
-        self.user_id = user_id
-        self.username = username
-        self.objection_bot = objection_bot
-        self.response_sent = False
-
-    @discord.ui.button(label="Grant Moderator", style=discord.ButtonStyle.primary, emoji="🛡️")
-    async def grant_mod_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if self.response_sent:
-            await interaction.response.send_message("Already responded.", ephemeral=True)
-            return
-        
-        # Check if bot still has admin status
-        if not self.objection_bot.is_admin:
-            await interaction.response.send_message("❌ Bot no longer has admin status - cannot grant moderator.", ephemeral=True)
-            return
-        
-        # Attempt to add moderator
-        success = await self.objection_bot.add_moderator(self.user_id)
-        
-        if success:
-            # Update the embed to show completion
-            embed = discord.Embed(
-                title="✅ Moderator Granted",
-                description=f"**{self.username}** has been granted moderator status!",
-                color=0x00ff00  # Green color
-            )
-            embed.add_field(
-                name="User Info",
-                value=f"Username: {self.username}\nUser ID: `{self.user_id[:8]}...`",
-                inline=False
-            )
-            embed.add_field(
-                name="Status",
-                value="✅ Moderator request completed successfully.",
-                inline=False
-            )
-            
-            # Disable all buttons
-            for item in self.children:
-                item.disabled = True
-            
-            # Update the message with new embed and disabled view
-            await interaction.response.edit_message(embed=embed, view=self)
-            print(f"[MOD] {self.username} granted moderator status via Discord approval")
-        else:
-            await interaction.response.send_message(f"❌ Failed to grant moderator status to **{self.username}**. They may no longer be in the room.", ephemeral=True)
-        
-        self.response_sent = True
-        self.stop()
+# ModRequestView class removed - this is a junior bot with no admin functionality
 
 class ObjectionBot:
     def __init__(self, config):
@@ -1542,19 +1199,7 @@ class ObjectionBot:
             self._pending_pair_request = None
             return
 
-        # Check for moderator request message - flexible word order
-        text_lower = text.lower()
-        required_words = ["please", "mod", "me"]
-        courtdog_variants = ["courtdog-sama", "courtdog"]
-        
-        # Check if all required words are present and at least one courtdog variant
-        has_required_words = all(word in text_lower for word in required_words)
-        has_courtdog = any(variant in text_lower for variant in courtdog_variants)
-        
-        if has_required_words and has_courtdog and self.is_admin and user_id != self.user_id:
-            print(f"[MOD] Mod request from user: {text}")
-            await self.handle_mod_request(user_id)
-            return
+        # Moderator request functionality removed - this is a junior bot with no admin functionality
 
         if user_id != self.user_id:
             # Check ignore patterns 
@@ -1821,36 +1466,7 @@ class ObjectionBot:
         else:
             print(f"[MOD] Warning: Expected list but got {type(mod_list)}: {mod_list}")
     
-    async def handle_mod_request(self, user_id):
-        """Handle moderator request from a user"""
-        username = self.user_names.get(user_id, f"User-{user_id[:8]}")
-        print(f"[MOD] Processing mod request from {username} ({user_id})")
-        
-        # Check if user is already a moderator
-        if user_id in self.current_mods:
-            print(f"[MOD] {username} is already a moderator")
-            return
-        
-        # Send mod request to Discord for approval
-        if self.discord_bot and self.discord_bot.bridge_channel:
-            await self.discord_bot.send_mod_request_to_discord(user_id, username, self)
-    
-    async def add_moderator(self, user_id):
-        """Add a user as a moderator"""
-        if not self.is_admin:
-            print("[MOD] Cannot add moderator - bot is not admin")
-            return False
-        
-        # Check if user is still in the room
-        if user_id not in self.user_names:
-            print(f"[MOD] Cannot add moderator - user {user_id[:8]} not in room")
-            return False
-        
-        # Add to current mods set
-        self.current_mods.add(user_id)
-        
-        # Update moderators on server
-        return await self.update_moderators()
+    # Moderator request and management functionality removed - this is a junior bot with no admin functionality
     
     async def update_moderators(self):
         """Update the moderator list on the server"""
