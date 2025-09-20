@@ -1533,11 +1533,20 @@ class ObjectionBot:
             
             # Get username from our stored mapping
             username = self.user_names.get(user_id)
-            # If we don't have the username, request room update and wait briefly
+            # If we don't have the username, request room update and wait for response
             if username is None:
                 print(f"🔄 Unknown user {user_id[:8]}, requesting room update...")
                 await self.websocket.send('42["get_room"]')
-                username = self.user_names.get(user_id, f"User-{user_id[:8]}")
+                # Wait a moment for the room update to be processed
+                await asyncio.sleep(0.5)
+                # Try again after the refresh
+                username = self.user_names.get(user_id)
+                if username is None:
+                    # Still unknown after refresh, use fallback
+                    username = f"User-{user_id[:8]}"
+                    print(f"⚠️ User {user_id[:8]} still unknown after refresh, using fallback: {username}")
+                else:
+                    print(f"✅ Found username after refresh: {username}")
             print(f"📨 Received: {username}: {text}")
             # Send to Discord if connected
             if self.discord_bot:
@@ -1547,17 +1556,20 @@ class ObjectionBot:
         """Handle room updates to get user information"""
         users = data.get('users', [])
 
-        # Clear and rebuild our username mapping from authoritative room data
+        # Build new username mapping from authoritative room data
         # This ensures we don't have stale entries from users who left
         old_user_names = self.user_names.copy()
-        self.user_names.clear()
+        new_user_names = {}
         
-        # Update our username mapping with current room users
+        # Build the new mapping with current room users
         for user in users:
             if 'id' in user and 'username' in user:
                 user_id = user['id']
                 username = user['username']
-                self.user_names[user_id] = username
+                new_user_names[user_id] = username
+        
+        # Atomically replace the old mapping to avoid race conditions
+        self.user_names = new_user_names
         
         # Log if we cleared any stale entries
         current_user_ids = set(self.user_names.keys())
