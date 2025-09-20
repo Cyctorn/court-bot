@@ -378,18 +378,8 @@ class DiscordCourtBot(discord.Client):
                         inline=False
                     )
                     startup_embed.add_field(
-                        name="Admin Commands",
-                        value="/titlebar - Change courtroom title\n/slowmode - Set slow mode (requires 3 confirmations)\n/setpassword - Set password to THE USUAL (requires 3 confirmations)\n/text - Change textbox appearance",
-                        inline=False
-                    )
-                    startup_embed.add_field(
                         name="Color Presets",
                         value="red, green, blue, purple, orange, yellow, pink, cyan, lime, magenta, gold, silver",
-                        inline=False
-                    )
-                    startup_embed.add_field(
-                        name="Textbox Presets",
-                        value="aa-trilogy, aa-apollo, aa-classic, aa-ds, fallout-nv, fallout-3, dq8, dq7, dq5, lobotomy, katawa, umineko, blue-archive",
                         inline=False
                     )
                     startup_embed.add_field(
@@ -427,18 +417,8 @@ class DiscordCourtBot(discord.Client):
                 inline=False
             )
             embed.add_field(
-                name="Admin Commands",
-                value="/titlebar - Change courtroom title (admin only)\n/slowmode - Set slow mode (admin only, requires 3 confirmations)\n/setpassword - Set password to THE USUAL (admin only, requires 3 confirmations)\n/text - Change textbox appearance (admin only)",
-                inline=False
-            )
-            embed.add_field(
                 name="Color Presets",
                 value="red, green, blue, purple, orange, yellow, pink, cyan, lime, magenta, gold, silver\nOr use custom hex codes like #ff0000",
-                inline=False
-            )
-            embed.add_field(
-                name="Textbox Presets",
-                value="aa-trilogy, aa-apollo, aa-classic, aa-ds, fallout-nv, fallout-3, dq8, dq7, dq5, lobotomy, katawa, umineko, blue-archive\nOr use custom textbox IDs",
                 inline=False
             )
             embed.add_field(
@@ -560,11 +540,6 @@ class DiscordCourtBot(discord.Client):
             embed.add_field(
                 name="Available Commands",
                 value="/status - Check bridge status\n/reconnect - Reconnect to courtroom\n/nickname - Set your bridge nickname\n/color - Set your message color\n/shaba\n/help - Show this help",
-                inline=False
-            )
-            embed.add_field(
-                name="Admin Commands",
-                value="/titlebar - Change courtroom title\n/slowmode - Set slow mode (requires 3 confirmations)\n/setpassword - Set password to THE USUAL (requires 3 confirmations)\n/text - Change textbox appearance\n/aspect - Change aspect ratio",
                 inline=False
             )
             embed.add_field(
@@ -2110,11 +2085,6 @@ async def terminal_command_listener(objection_bot, discord_bot):
                 print("\n👥 User Management:")
                 print("  users            - List all users in courtroom")
                 print("  transfer <user>  - Transfer ownership to user (admin only)")
-                print("\n🛡️ Admin Commands:")
-                print("  title <text>     - Change room title (admin only)")
-                print("  slowmode <0-60>  - Set slow mode seconds (admin only)")
-                print("  textbox <style>  - Change textbox style (admin only)")
-                print("  aspect <ratio>   - Change aspect ratio (admin only)")
                 print("\n� Advanced:")
                 print("  ws <message>     - Send raw WebSocket message")
                 print("  websocket <msg>  - Send raw WebSocket message (alias)")
