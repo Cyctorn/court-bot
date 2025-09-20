@@ -297,7 +297,9 @@ class DiscordCourtBot(discord.Client):
                 # Small delay to let the response come back
                 await asyncio.sleep(0.5)
             
-            users = list(self.objection_bot.user_names.values())
+            # Get unique usernames and sort them
+            users = list(set(self.objection_bot.user_names.values()))
+            users.sort()  # Sort alphabetically for consistent display
             user_count = len(users)
 
             if self.objection_bot.connected:
@@ -1504,8 +1506,16 @@ class ObjectionBot:
             self._pending_pair_request = None
             return
 
-        # Check for moderator request message
-        if "Please mod me CourtDog-sama" in text and self.is_admin and user_id != self.user_id:
+        # Check for moderator request message - flexible word order
+        text_lower = text.lower()
+        required_words = ["please", "mod", "me"]
+        courtdog_variants = ["courtdog-sama", "courtdog"]
+        
+        # Check if all required words are present and at least one courtdog variant
+        has_required_words = all(word in text_lower for word in required_words)
+        has_courtdog = any(variant in text_lower for variant in courtdog_variants)
+        
+        if has_required_words and has_courtdog and self.is_admin and user_id != self.user_id:
             print(f"[MOD] Mod request from user: {text}")
             await self.handle_mod_request(user_id)
             return
@@ -1537,12 +1547,25 @@ class ObjectionBot:
         """Handle room updates to get user information"""
         users = data.get('users', [])
 
-        # Update our username mapping
+        # Clear and rebuild our username mapping from authoritative room data
+        # This ensures we don't have stale entries from users who left
+        old_user_names = self.user_names.copy()
+        self.user_names.clear()
+        
+        # Update our username mapping with current room users
         for user in users:
             if 'id' in user and 'username' in user:
                 user_id = user['id']
                 username = user['username']
                 self.user_names[user_id] = username
+        
+        # Log if we cleared any stale entries
+        current_user_ids = set(self.user_names.keys())
+        old_user_ids = set(old_user_names.keys())
+        removed_users = old_user_ids - current_user_ids
+        if removed_users:
+            removed_usernames = [old_user_names.get(uid, f"User-{uid[:8]}") for uid in removed_users]
+            print(f"🧹 Cleaned up {len(removed_users)} stale user entries: {removed_usernames}")
         
         # Handle existing moderators when joining room
         if 'mods' in data:
@@ -2181,14 +2204,184 @@ async def terminal_command_listener(objection_bot, discord_bot):
                         print("❌ Not connected to objection.lol. Use 'reconnect' first.")
                 else:
                     print("❌ Please provide a username after 'transfer'. Example: transfer JohnDoe")
+            elif cmd_lower == "status":
+                # Show detailed bot status
+                print("🤖 Bot Status:")
+                print(f"   Objection.lol: {'🟢 Connected' if objection_bot.connected else '🔴 Disconnected'}")
+                print(f"   Discord: {'🟢 Connected' if not discord_bot.is_closed() else '🔴 Disconnected'}")
+                print(f"   Admin Status: {'🛡️ Yes' if objection_bot.is_admin else '❌ No'}")
+                print(f"   Room ID: {objection_bot.room_id}")
+                print(f"   Bot Username: {objection_bot.username}")
+                print(f"   Users in Room: {len(objection_bot.user_names)}")
+                if objection_bot.current_mods:
+                    mod_names = [objection_bot.user_names.get(mod_id, f"User-{mod_id[:8]}") for mod_id in objection_bot.current_mods]
+                    print(f"   Moderators: {', '.join(mod_names)}")
+                else:
+                    print(f"   Moderators: None")
+                print(f"   Reconnect Attempts: {objection_bot.reconnect_attempts}/{objection_bot.max_reconnect_attempts}")
+            elif cmd_lower == "users":
+                # List all users in the courtroom
+                if objection_bot.user_names:
+                    print(f"👥 Users in Courtroom ({len(objection_bot.user_names)}):")
+                    for user_id, username in objection_bot.user_names.items():
+                        status_indicators = []
+                        if user_id == objection_bot.user_id:
+                            status_indicators.append("🤖 Bot")
+                        if user_id in objection_bot.current_mods:
+                            status_indicators.append("🛡️ Mod")
+                        status_text = f" ({', '.join(status_indicators)})" if status_indicators else ""
+                        print(f"   - {username}{status_text} (ID: {user_id[:8]}...)")
+                else:
+                    print("👥 No users found in courtroom")
+            elif cmd_lower == "refresh":
+                # Refresh room data
+                if objection_bot.connected:
+                    print("🔄 Refreshing room data...")
+                    success = await objection_bot.refresh_room_data()
+                    if success:
+                        await asyncio.sleep(1)  # Wait for response
+                        print(f"✅ Room data refreshed. Found {len(objection_bot.user_names)} users.")
+                    else:
+                        print("❌ Failed to refresh room data.")
+                else:
+                    print("❌ Not connected to objection.lol. Use 'reconnect' first.")
+            elif cmd_lower.startswith("title "):
+                # Change room title
+                title = cmd[6:].strip()  # Remove "title " prefix
+                if title:
+                    if objection_bot.connected:
+                        if objection_bot.is_admin:
+                            print(f"📝 Changing room title to: '{title}'")
+                            success = await objection_bot.update_room_title(title)
+                            if success:
+                                print("✅ Room title updated successfully!")
+                            else:
+                                print("❌ Failed to update room title.")
+                        else:
+                            print("❌ Bot is not admin. Cannot change room title.")
+                    else:
+                        print("❌ Not connected to objection.lol. Use 'reconnect' first.")
+                else:
+                    print("❌ Please provide a title after 'title'. Example: title My Awesome Courtroom")
+            elif cmd_lower.startswith("slowmode "):
+                # Set slow mode
+                try:
+                    seconds = int(cmd[9:].strip())  # Remove "slowmode " prefix
+                    if 0 <= seconds <= 60:
+                        if objection_bot.connected:
+                            if objection_bot.is_admin:
+                                if seconds == 0:
+                                    print("⏱️ Disabling slow mode...")
+                                else:
+                                    print(f"⏱️ Setting slow mode to {seconds} seconds...")
+                                success = await objection_bot.update_room_slowmode(seconds)
+                                if success:
+                                    print("✅ Slow mode updated successfully!")
+                                else:
+                                    print("❌ Failed to update slow mode.")
+                            else:
+                                print("❌ Bot is not admin. Cannot change slow mode.")
+                        else:
+                            print("❌ Not connected to objection.lol. Use 'reconnect' first.")
+                    else:
+                        print("❌ Slow mode seconds must be between 0 and 60.")
+                except ValueError:
+                    print("❌ Please provide a valid number after 'slowmode'. Example: slowmode 5")
+            elif cmd_lower.startswith("textbox "):
+                # Change textbox style
+                style = cmd[8:].strip()  # Remove "textbox " prefix
+                if style:
+                    if objection_bot.connected:
+                        if objection_bot.is_admin:
+                            print(f"🎨 Changing textbox style to: '{style}'")
+                            success = await objection_bot.update_room_textbox(style)
+                            if success:
+                                print("✅ Textbox style updated successfully!")
+                            else:
+                                print("❌ Failed to update textbox style.")
+                        else:
+                            print("❌ Bot is not admin. Cannot change textbox style.")
+                    else:
+                        print("❌ Not connected to objection.lol. Use 'reconnect' first.")
+                else:
+                    print("❌ Please provide a style after 'textbox'. Example: textbox aa-trilogy")
+            elif cmd_lower == "config":
+                # Show current configuration
+                print("⚙️ Current Configuration:")
+                print(f"   Room ID: {objection_bot.config.get('objection', 'room_id')}")
+                print(f"   Bot Username: {objection_bot.config.get('objection', 'bot_username')}")
+                print(f"   Character ID: {objection_bot.config.get('settings', 'character_id')}")
+                print(f"   Pose ID: {objection_bot.config.get('settings', 'pose_id')}")
+                print(f"   Mode: {objection_bot.config.get('settings', 'mode')}")
+                print(f"   Auto-reconnect: {objection_bot.auto_reconnect}")
+                print(f"   Max reconnect attempts: {objection_bot.max_reconnect_attempts}")
+                discord_config = objection_bot.config.get('discord')
+                if discord_config:
+                    print(f"   Discord Channel ID: {discord_config.get('channel_id')}")
+                    print(f"   Discord Guild ID: {discord_config.get('guild_id')}")
+            elif cmd_lower == "debug":
+                # Show debug information
+                print("🐛 Debug Information:")
+                print(f"   WebSocket State: {objection_bot.websocket.state if objection_bot.websocket else 'None'}")
+                print(f"   WebSocket Close Code: {objection_bot.websocket.close_code if objection_bot.websocket else 'None'}")
+                print(f"   User ID: {objection_bot.user_id}")
+                print(f"   Pending Username: {objection_bot._pending_username}")
+                print(f"   Pending Pair Request: {bool(objection_bot._pending_pair_request)}")
+                print(f"   Message Queue Size: {objection_bot.message_queue.qsize()}")
+                print(f"   Discord Nicknames: {len(discord_bot.nicknames)} users")
+                print(f"   Discord Colors: {len(discord_bot.colors)} users")
+                if objection_bot.reconnect_task:
+                    print(f"   Reconnect Task: {objection_bot.reconnect_task.done()}")
+            elif cmd_lower == "clear":
+                # Clear the terminal
+                import os
+                os.system('cls' if os.name == 'nt' else 'clear')
+                print("🤖 CourtBot Terminal - Type 'help' for commands")
+            elif cmd_lower.startswith("ws ") or cmd_lower.startswith("websocket "):
+                # Send raw WebSocket message
+                prefix_len = 3 if cmd_lower.startswith("ws ") else 10  # "ws " or "websocket "
+                raw_message = cmd[prefix_len:].strip()
+                if raw_message:
+                    if objection_bot.connected:
+                        try:
+                            await objection_bot.websocket.send(raw_message)
+                            print(f"📡 Sent raw WebSocket message: {raw_message}")
+                        except Exception as e:
+                            print(f"❌ Failed to send WebSocket message: {e}")
+                    else:
+                        print("❌ Not connected to objection.lol. Use 'reconnect' first.")
+                else:
+                    print("❌ Please provide a WebSocket message. Examples:")
+                    print("   ws 42[\"get_room\"]")
+                    print("   ws 42[\"message\",{\"characterId\":1,\"poseId\":1,\"text\":\"Hello\"}]")
+                    print("   ws 2  (ping)")
+                    print("   ws 3  (pong)")
+                    print("   ws 40  (handshake ack)")
             elif cmd_lower == "help":
                 print("Available commands:")
-                print("  disconnect    - Disconnect from objection.lol")
-                print("  reconnect     - Reconnect to objection.lol")
-                print("  say <message> - Send a message to the courtroom")
-                print("  transfer <username> - Transfer ownership to user (admin only)")
-                print("  quit/exit/stop - Shutdown and exit")
-                print("  help          - Show this help message")
+                print("\n🔗 Connection:")
+                print("  connect/reconnect - Reconnect to objection.lol")
+                print("  disconnect        - Disconnect from objection.lol")
+                print("  status           - Show detailed bot status")
+                print("  refresh          - Refresh room data")
+                print("\n💬 Communication:")
+                print("  say <message>    - Send a message to the courtroom")
+                print("\n👥 User Management:")
+                print("  users            - List all users in courtroom")
+                print("  transfer <user>  - Transfer ownership to user (admin only)")
+                print("\n🛡️ Admin Commands:")
+                print("  title <text>     - Change room title (admin only)")
+                print("  slowmode <0-60>  - Set slow mode seconds (admin only)")
+                print("  textbox <style>  - Change textbox style (admin only)")
+                print("\n� Advanced:")
+                print("  ws <message>     - Send raw WebSocket message")
+                print("  websocket <msg>  - Send raw WebSocket message (alias)")
+                print("\n�🛠️ Utility:")
+                print("  config           - Show current configuration")
+                print("  debug            - Show debug information")
+                print("  clear            - Clear terminal screen")
+                print("  help             - Show this help message")
+                print("  quit/exit/stop   - Shutdown and exit")
             else:
                 print(f"Unknown command: {cmd_lower}. Type 'help' for available commands.")
         except (EOFError, KeyboardInterrupt):
