@@ -775,6 +775,42 @@ class DiscordCourtBot(discord.Client):
                 print(f"❌ Textbox command error: {e}")
                 await interaction.followup.send(f"❌ Failed to change textbox: {str(e)}", ephemeral=False)
 
+        @self.tree.command(name="aspect", description="Change the chatroom aspect ratio (admin only)")
+        @app_commands.describe(ratio="Aspect ratio (3:2, 4:3, 16:9, 16:10)")
+        @app_commands.choices(ratio=[
+            app_commands.Choice(name="3:2", value="3:2"),
+            app_commands.Choice(name="4:3", value="4:3"), 
+            app_commands.Choice(name="16:9", value="16:9"),
+            app_commands.Choice(name="16:10", value="16:10")
+        ])
+        async def aspect_command(interaction: discord.Interaction, ratio: app_commands.Choice[str]):
+            """Change chatroom aspect ratio (admin only)"""
+            await interaction.response.defer(ephemeral=False)
+
+            if not self.objection_bot.connected:
+                await interaction.followup.send("❌ Not connected to objection.lol", ephemeral=False)
+                return
+
+            if not self.objection_bot.is_admin:
+                await interaction.followup.send("❌ Need admin status in the courtroom to change the aspect ratio", ephemeral=False)
+                return
+
+            try:
+                success = await self.objection_bot.update_room_aspect_ratio(ratio.value)
+                if success:
+                    embed = discord.Embed(
+                        title="✅ Aspect Ratio Updated",
+                        description=f"Successfully changed aspect ratio to: **{ratio.value}**",
+                        color=0x00ff00
+                    )
+                    await interaction.followup.send(embed=embed, ephemeral=False)
+                    print(f"[ASPECT] Discord user {interaction.user.display_name} changed aspect ratio to: {ratio.value}")
+                else:
+                    await interaction.followup.send("❌ Failed to update aspect ratio. Check bot status and permissions.", ephemeral=False)
+            except Exception as e:
+                print(f"❌ Aspect ratio command error: {e}")
+                await interaction.followup.send(f"❌ Failed to change aspect ratio: {str(e)}", ephemeral=False)
+
     async def on_ready(self):
         print(f'🤖 Discord bot logged in as {self.user}')
         self.bridge_channel = self.get_channel(self.channel_id)
@@ -797,7 +833,7 @@ class DiscordCourtBot(discord.Client):
             )
             embed.add_field(
                 name="Admin Commands",
-                value="/titlebar - Change courtroom title\n/slowmode - Set slow mode (requires 3 confirmations)\n/setpassword - Set password to THE USUAL (requires 3 confirmations)\n/text - Change textbox appearance",
+                value="/titlebar - Change courtroom title\n/slowmode - Set slow mode (requires 3 confirmations)\n/setpassword - Set password to THE USUAL (requires 3 confirmations)\n/text - Change textbox appearance\n/aspect - Change aspect ratio",
                 inline=False
             )
             embed.add_field(
@@ -1554,30 +1590,65 @@ class ObjectionBot:
     
     async def handle_room_update(self, data):
         """Handle room updates to get user information"""
-        users = data.get('users', [])
-
-        # Build new username mapping from authoritative room data
-        # This ensures we don't have stale entries from users who left
-        old_user_names = self.user_names.copy()
-        new_user_names = {}
+        # Log the raw data structure for debugging
+        print(f"[DEBUG] Room update data keys: {list(data.keys()) if isinstance(data, dict) else 'Not a dict'}")
         
-        # Build the new mapping with current room users
+        # The data parameter IS the room object, users are nested inside it
+        users = data.get('users', [])
+        
+        # Validate room update data - only process if we have valid user data
+        if not isinstance(users, list):
+            print(f"⚠️ Invalid room update: users is not a list: {type(users)}")
+            print(f"[DEBUG] Full data structure: {data}")
+            return
+            
+        # Check if this looks like a valid room update with actual user data
+        valid_users = []
         for user in users:
-            if 'id' in user and 'username' in user:
+            if isinstance(user, dict) and 'id' in user and 'username' in user:
+                valid_users.append(user)
+        
+        print(f"[DEBUG] Found {len(users)} users in update, {len(valid_users)} valid users")
+        
+        # Don't update user mapping if we got empty or invalid user data
+        # This prevents losing all users due to incomplete server responses
+        if not valid_users and self.user_names:
+            print(f"⚠️ Received empty user list in room update - keeping existing user data")
+            print(f"👥 Existing users preserved: {list(self.user_names.values())}")
+            # Still process other room data like mods, but don't touch user mapping
+        else:
+            # Build new username mapping from authoritative room data
+            # This ensures we don't have stale entries from users who left
+            old_user_names = self.user_names.copy()
+            new_user_names = {}
+            
+            # Build the new mapping with current room users
+            for user in valid_users:
                 user_id = user['id']
                 username = user['username']
                 new_user_names[user_id] = username
-        
-        # Atomically replace the old mapping to avoid race conditions
-        self.user_names = new_user_names
-        
-        # Log if we cleared any stale entries
-        current_user_ids = set(self.user_names.keys())
-        old_user_ids = set(old_user_names.keys())
-        removed_users = old_user_ids - current_user_ids
-        if removed_users:
-            removed_usernames = [old_user_names.get(uid, f"User-{uid[:8]}") for uid in removed_users]
-            print(f"🧹 Cleaned up {len(removed_users)} stale user entries: {removed_usernames}")
+                print(f"[DEBUG] Mapping user: {user_id[:8]}... → {username}")
+            
+            # Atomically replace the old mapping to avoid race conditions
+            self.user_names = new_user_names
+            
+            # Log if we cleared any stale entries
+            current_user_ids = set(self.user_names.keys())
+            old_user_ids = set(old_user_names.keys())
+            removed_users = old_user_ids - current_user_ids
+            added_users = current_user_ids - old_user_ids
+            
+            if removed_users:
+                removed_usernames = [old_user_names.get(uid, f"User-{uid[:8]}") for uid in removed_users]
+                print(f"🧹 Cleaned up {len(removed_users)} stale user entries: {removed_usernames}")
+            
+            if added_users:
+                added_usernames = [new_user_names.get(uid, f"User-{uid[:8]}") for uid in added_users]
+                print(f"➕ Added {len(added_users)} new users: {added_usernames}")
+            
+            # Log current users
+            usernames = [user.get('username') for user in valid_users]
+            print(f"👥 Users in room: {usernames}")
         
         # Handle existing moderators when joining room
         if 'mods' in data:
@@ -1595,14 +1666,11 @@ class ObjectionBot:
         
         # Signal username change event if our username was updated
         if self.user_id:
-            for user in users:
+            for user in valid_users:
                 if user.get('id') == self.user_id and self._pending_username:
                     if user.get('username') == self._pending_username:
                         print(f"[DEBUG] Username for our user_id matched pending username: {self._pending_username}")
                         self._username_change_event.set()
-        
-        usernames = [user.get('username') for user in users]
-        print(f"👥 Users in room: {usernames}")
     
     async def handle_me_response(self, data):
         """Handle 'me' response to get our user ID"""
@@ -2099,6 +2167,29 @@ class ObjectionBot:
             print(f"[TEXTBOX] Error updating textbox: {e}")
             return False
 
+    async def update_room_aspect_ratio(self, aspect_ratio):
+        """Update the room aspect ratio (admin only)"""
+        if not self.is_admin:
+            print("[ASPECT] Cannot update aspect ratio - bot is not admin")
+            return False
+        
+        # Validate aspect ratio
+        valid_ratios = ["3:2", "4:3", "16:9", "16:10"]
+        if aspect_ratio not in valid_ratios:
+            print(f"[ASPECT] Invalid aspect ratio: {aspect_ratio}. Valid options: {', '.join(valid_ratios)}")
+            return False
+        
+        # Send update to server
+        try:
+            update_data = {"aspectRatio": aspect_ratio}
+            message = f'42["update_room",{json.dumps(update_data)}]'
+            await self.websocket.send(message)
+            print(f"[ASPECT] Updated room aspect ratio: {aspect_ratio}")
+            return True
+        except Exception as e:
+            print(f"[ASPECT] Error updating aspect ratio: {e}")
+            return False
+
     async def refresh_room_data(self):
         """Refresh room data by sending get_room message"""
         if not self.connected or not self.websocket:
@@ -2317,6 +2408,28 @@ async def terminal_command_listener(objection_bot, discord_bot):
                         print("❌ Not connected to objection.lol. Use 'reconnect' first.")
                 else:
                     print("❌ Please provide a style after 'textbox'. Example: textbox aa-trilogy")
+            elif cmd_lower.startswith("aspect "):
+                # Change aspect ratio
+                ratio = cmd[7:].strip()  # Remove "aspect " prefix
+                if ratio:
+                    valid_ratios = ["3:2", "4:3", "16:9", "16:10"]
+                    if ratio in valid_ratios:
+                        if objection_bot.connected:
+                            if objection_bot.is_admin:
+                                print(f"📐 Changing aspect ratio to: '{ratio}'")
+                                success = await objection_bot.update_room_aspect_ratio(ratio)
+                                if success:
+                                    print("✅ Aspect ratio updated successfully!")
+                                else:
+                                    print("❌ Failed to update aspect ratio.")
+                            else:
+                                print("❌ Bot is not admin. Cannot change aspect ratio.")
+                        else:
+                            print("❌ Not connected to objection.lol. Use 'reconnect' first.")
+                    else:
+                        print(f"❌ Invalid aspect ratio '{ratio}'. Valid options: {', '.join(valid_ratios)}")
+                else:
+                    print("❌ Please provide an aspect ratio after 'aspect'. Example: aspect 16:9")
             elif cmd_lower == "config":
                 # Show current configuration
                 print("⚙️ Current Configuration:")
@@ -2385,6 +2498,7 @@ async def terminal_command_listener(objection_bot, discord_bot):
                 print("  title <text>     - Change room title (admin only)")
                 print("  slowmode <0-60>  - Set slow mode seconds (admin only)")
                 print("  textbox <style>  - Change textbox style (admin only)")
+                print("  aspect <ratio>   - Change aspect ratio (admin only)")
                 print("\n� Advanced:")
                 print("  ws <message>     - Send raw WebSocket message")
                 print("  websocket <msg>  - Send raw WebSocket message (alias)")
