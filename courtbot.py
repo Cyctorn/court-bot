@@ -395,7 +395,7 @@ class DiscordCourtBot(discord.Client):
                         value=f"Room ID: `{self.config.get('objection', 'room_id')}`",
                         inline=False
                     )
-                    self.startup_message = await self.bridge_channel.send(startup_embed)
+                    self.startup_message = await self.bridge_channel.send(embed=startup_embed)
                 else:
                     embed = discord.Embed(
                         title="❌ Reconnection Failed",
