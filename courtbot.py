@@ -887,10 +887,10 @@ class ObjectionBot:
         self.ping_interval = 25000  # Default ping interval in ms
         self.ping_timeout = 5000    # Default ping timeout in ms
         
-        # Client-side health check settings
-        self.health_check_interval = 15  # Client ping every 15 seconds
-        self.health_check_timeout = 10   # Consider disconnected if no response in 10 seconds
-        self.last_pong_time = None
+        # Simple health check settings - track server pings
+        self.health_check_interval = 15  # Check every 15 seconds
+        self.server_ping_timeout = 60    # Reconnect if no server ping for 60 seconds
+        self.last_server_ping_time = None
         self.health_check_task = None
         
         # Auto-reconnect settings
@@ -955,7 +955,7 @@ class ObjectionBot:
                     self.reconnect_attempts = 0  # Reset reconnect attempts on successful connection
                     
                     # Initialize health check timing
-                    self.last_pong_time = time.time()
+                    self.last_server_ping_time = time.time()
                     
                     # Send "me" message to get user info
                     print("🔍 Sending 'me' message...")
@@ -1117,13 +1117,13 @@ class ObjectionBot:
             
             elif message.startswith('2'):
                 # Ping message from server, respond with pong
+                self.last_server_ping_time = time.time()  # Track when we received server ping
                 await self.websocket.send("3")
-                print("📡 Received ping, sent pong")
+                print("📡 Received server ping, sent pong")
                 
             elif message.startswith('3'):
-                # Pong message from server (response to our ping)
-                self.last_pong_time = time.time()
-                print("📡 Received pong - connection healthy")
+                # Pong message from server (response to our ping) - not used in simple health check
+                print("📡 Received pong from server")
             
         except Exception as e:
             print(f"❌ Error processing message: {e}")
@@ -1174,10 +1174,10 @@ class ObjectionBot:
                 await self.discord_bot.bridge_channel.send(embed=embed)
     
     async def health_check_loop(self):
-        """Proactive health check - ping server every 15 seconds to detect disconnections"""
+        """Simple health check - monitor server pings and reconnect if none received"""
         
-        # Initialize last pong time to current time
-        self.last_pong_time = time.time()
+        # Initialize last server ping time to current time
+        self.last_server_ping_time = time.time()
         
         while self.connected:
             try:
@@ -1186,12 +1186,12 @@ class ObjectionBot:
                 if not self.connected:
                     break
                 
-                # Check if we've received a pong recently
+                # Check if we've received a server ping recently
                 current_time = time.time()
-                time_since_pong = current_time - self.last_pong_time
+                time_since_server_ping = current_time - self.last_server_ping_time
                 
-                if time_since_pong > self.health_check_timeout:
-                    print(f"⚠️ Health check failed: No pong received for {time_since_pong:.1f} seconds")
+                if time_since_server_ping > self.server_ping_timeout:
+                    print(f"⚠️ Health check failed: No server ping received for {time_since_server_ping:.1f} seconds")
                     print("🔌 Connection appears to be dead - triggering reconnect")
                     self.connected = False
                     
@@ -1206,19 +1206,8 @@ class ObjectionBot:
                     if self.auto_reconnect:
                         await self.start_auto_reconnect()
                     break
-                
-                # Send a client-side ping to check connection health
-                try:
-                    await self.websocket.send("2")  # Send ping
-                    print(f"📡 Health check ping sent (last pong: {time_since_pong:.1f}s ago)")
-                except Exception as e:
-                    print(f"❌ Failed to send health check ping: {e}")
-                    self.connected = False
-                    
-                    # Start auto-reconnect
-                    if self.auto_reconnect:
-                        await self.start_auto_reconnect()
-                    break
+                else:
+                    print(f"� Health check OK (last server ping: {time_since_server_ping:.1f}s ago)")
                     
             except asyncio.CancelledError:
                 print("🔍 Health check loop cancelled")
