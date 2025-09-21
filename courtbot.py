@@ -379,7 +379,7 @@ class DiscordCourtBot(discord.Client):
                     )
                     startup_embed.add_field(
                         name="Admin Commands",
-                        value="/titlebar - Change courtroom title\n/slowmode - Set slow mode (requires 3 confirmations)\n/setpassword - Set password to THE USUAL (requires 3 confirmations)\n/text - Change textbox appearance",
+                        value="/titlebar - Change courtroom title\n/slowmode - Set slow mode (requires 3 confirmations)\n/setpassword - Set/remove room password (requires 3 confirmations)\n/text - Change textbox appearance\n/aspect - Change aspect ratio\n/spectating - Enable/disable spectating",
                         inline=False
                     )
                     startup_embed.add_field(
@@ -428,7 +428,7 @@ class DiscordCourtBot(discord.Client):
             )
             embed.add_field(
                 name="Admin Commands",
-                value="/titlebar - Change courtroom title (admin only)\n/slowmode - Set slow mode (admin only, requires 3 confirmations)\n/setpassword - Set password to THE USUAL (admin only, requires 3 confirmations)\n/text - Change textbox appearance (admin only)",
+                value="/titlebar - Change courtroom title (admin only)\n/slowmode - Set slow mode (admin only, requires 3 confirmations)\n/setpassword - Set/remove room password (admin only, requires 3 confirmations)\n/text - Change textbox appearance (admin only)\n/aspect - Change aspect ratio (admin only)\n/spectating - Enable/disable spectating (admin only)",
                 inline=False
             )
             embed.add_field(
@@ -660,9 +660,10 @@ class DiscordCourtBot(discord.Client):
                 )
                 await message.edit(embed=timeout_embed)
 
-        @self.tree.command(name="setpassword", description="Set room password to THE USUAL (admin only, requires 3 confirmations)")
-        async def setpassword_command(interaction: discord.Interaction):
-            """Set room password (admin only, requires confirmations)"""
+        @self.tree.command(name="setpassword", description="Set or remove room password (admin only, requires 3 confirmations)")
+        @app_commands.describe(password="Password to set (leave blank to remove password)")
+        async def setpassword_command(interaction: discord.Interaction, password: str = ""):
+            """Set or remove room password (admin only, requires confirmations)"""
             await interaction.response.defer(ephemeral=True)
 
             if not self.objection_bot.connected:
@@ -673,10 +674,29 @@ class DiscordCourtBot(discord.Client):
                 await interaction.followup.send("❌ Need admin status in the courtroom to change password", ephemeral=True)
                 return
 
+            # Determine action based on password input
+            if password.strip() == "":
+                action_description = "**Remove password** (make room public)"
+                password_to_set = ""
+                action_title = "⚠️ Remove Room Password"
+                result_title = "✅ Password Removed"
+                result_description = "Room password has been **removed** - room is now public"
+            else:
+                # Truncate password display for security (show first 3 and last 3 chars if long enough)
+                if len(password) > 6:
+                    password_display = f"{password[:3]}...{password[-3:]}"
+                else:
+                    password_display = "*" * len(password)
+                action_description = f"**Set password** to: `{password_display}`"
+                password_to_set = password
+                action_title = "⚠️ Set Room Password"
+                result_title = "✅ Password Set"
+                result_description = f"Room password has been **set** to: `{password_display}`"
+
             # Create voting embed
             embed = discord.Embed(
-                title="⚠️ Set Emergency Password",
-                description="**This action requires 3 user confirmations**\n\nProposed change: **Set password to THE USUAL**",
+                title=action_title,
+                description=f"**This action requires 3 user confirmations**\n\nProposed change: {action_description}",
                 color=0xff9500
             )
             embed.add_field(
@@ -706,11 +726,11 @@ class DiscordCourtBot(discord.Client):
                 await self.objection_bot.discord_bot.wait_for('reaction_add', timeout=300.0, check=check)
                 
                 # Execute the password change
-                success = await self.objection_bot.update_room_password("sneedemfeedem")
+                success = await self.objection_bot.update_room_password(password_to_set)
                 if success:
                     result_embed = discord.Embed(
-                        title="✅ Password Set",
-                        description="Room password has been set to **THE USUAL**",
+                        title=result_title,
+                        description=result_description,
                         color=0x00ff00
                     )
                     await message.edit(embed=result_embed)
@@ -811,6 +831,43 @@ class DiscordCourtBot(discord.Client):
                 print(f"❌ Aspect ratio command error: {e}")
                 await interaction.followup.send(f"❌ Failed to change aspect ratio: {str(e)}", ephemeral=False)
 
+        @self.tree.command(name="spectating", description="Enable or disable spectating in the courtroom (admin only)")
+        @app_commands.describe(enabled="Whether spectating should be enabled")
+        @app_commands.choices(enabled=[
+            app_commands.Choice(name="Enable", value="true"),
+            app_commands.Choice(name="Disable", value="false")
+        ])
+        async def spectating_command(interaction: discord.Interaction, enabled: app_commands.Choice[str]):
+            """Enable or disable spectating (admin only)"""
+            await interaction.response.defer(ephemeral=False)
+            
+            if not self.objection_bot.connected:
+                await interaction.followup.send("❌ Not connected to objection.lol", ephemeral=False)
+                return
+
+            if not self.objection_bot.is_admin:
+                await interaction.followup.send("❌ Need admin status in the courtroom to change spectating settings", ephemeral=False)
+                return
+            
+            try:
+                enable_spectating = enabled.value == "true"
+                success = await self.objection_bot.update_room_spectating(enable_spectating)
+                
+                if success:
+                    status = "enabled" if enable_spectating else "disabled"
+                    embed = discord.Embed(
+                        title="✅ Spectating Updated",
+                        description=f"Spectating has been **{status}** in the courtroom",
+                        color=0x00ff00
+                    )
+                    await interaction.followup.send(embed=embed, ephemeral=False)
+                    print(f"[SPECTATING] Discord user {interaction.user.display_name} {status} spectating")
+                else:
+                    await interaction.followup.send("❌ Failed to update spectating settings. Check bot status and permissions.", ephemeral=False)
+            except Exception as e:
+                print(f"❌ Spectating command error: {e}")
+                await interaction.followup.send(f"❌ Failed to change spectating settings: {str(e)}", ephemeral=False)
+
     async def on_ready(self):
         print(f'🤖 Discord bot logged in as {self.user}')
         self.bridge_channel = self.get_channel(self.channel_id)
@@ -833,7 +890,7 @@ class DiscordCourtBot(discord.Client):
             )
             embed.add_field(
                 name="Admin Commands",
-                value="/titlebar - Change courtroom title\n/slowmode - Set slow mode (requires 3 confirmations)\n/setpassword - Set password to THE USUAL (requires 3 confirmations)\n/text - Change textbox appearance\n/aspect - Change aspect ratio",
+                value="/titlebar - Change courtroom title\n/slowmode - Set slow mode (requires 3 confirmations)\n/setpassword - Set/remove room password (requires 3 confirmations)\n/text - Change textbox appearance\n/aspect - Change aspect ratio\n/spectating - Enable/disable spectating",
                 inline=False
             )
             embed.add_field(
@@ -2188,6 +2245,24 @@ class ObjectionBot:
             return True
         except Exception as e:
             print(f"[ASPECT] Error updating aspect ratio: {e}")
+            return False
+
+    async def update_room_spectating(self, enable_spectating):
+        """Enable or disable spectating in the room (admin only)"""
+        if not self.is_admin:
+            print("[SPECTATING] Cannot update spectating - bot is not admin")
+            return False
+        
+        # Send update to server
+        try:
+            update_data = {"enableSpectating": enable_spectating}
+            message = f'42["update_room",{json.dumps(update_data)}]'
+            await self.websocket.send(message)
+            status = "enabled" if enable_spectating else "disabled"
+            print(f"[SPECTATING] {status.capitalize()} spectating in room")
+            return True
+        except Exception as e:
+            print(f"[SPECTATING] Error updating spectating: {e}")
             return False
 
     async def refresh_room_data(self):
