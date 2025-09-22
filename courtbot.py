@@ -1413,6 +1413,11 @@ class ObjectionBot:
 
                 # Don't show notification for the bot itself
                 if user_id != self.user_id:
+                    # Don't send name change notification if the user has courtdog in its name
+                    if ("courtdog" in old_username.lower() or "courtdog" in new_username.lower()):
+                        print(f"🚫 Ignoring court bot name change: {old_username} → {new_username}")
+                        return
+                    
                     print(f"✏️ User changed name: {old_username} → {new_username}")
 
                     # Send name change notification to Discord
