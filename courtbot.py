@@ -1793,11 +1793,18 @@ class ObjectionBot:
 
                 # Don't show notification for the bot itself
                 if user_id != self.user_id:
-                    print(f"✏️ User changed name: {old_username} → {new_username}")
+                    # Don't show notification for other court bots (check if either old or new username contains "courtdog")
+                    old_has_courtdog = "courtdog" in old_username.lower()
+                    new_has_courtdog = "courtdog" in new_username.lower()
+                    
+                    if not old_has_courtdog and not new_has_courtdog:
+                        print(f"✏️ User changed name: {old_username} → {new_username}")
 
-                    # Send name change notification to Discord
-                    if self.discord_bot:
-                        await self.discord_bot.send_username_change_notification(old_username, new_username)
+                        # Send name change notification to Discord
+                        if self.discord_bot:
+                            await self.discord_bot.send_username_change_notification(old_username, new_username)
+                    else:
+                        print(f"🤖 Court bot name change ignored: {old_username} → {new_username}")
     
     async def handle_create_pair(self, data):
         """Handle pairing requests"""
