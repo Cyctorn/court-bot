@@ -108,10 +108,14 @@ class Config:
         self.apply_env_overrides()
     
     def apply_env_overrides(self):
-        """Apply environment variable overrides to configuration - only for sensitive data"""
-        # Initialize discord section if it doesn't exist
+        """Apply environment variable overrides to configuration"""
+        # Initialize sections if they don't exist
         if 'discord' not in self.data:
             self.data['discord'] = {}
+        if 'objection' not in self.data:
+            self.data['objection'] = {}
+        if 'settings' not in self.data:
+            self.data['settings'] = {}
         
         # Discord settings (sensitive and deployment-specific)
         if os.getenv('DISCORD_TOKEN'):
@@ -129,6 +133,42 @@ class Config:
                 print("🔐 Discord guild ID loaded from environment variable")
             except ValueError:
                 print(f"❌ Invalid DISCORD_GUILD_ID environment variable")
+        
+        # Objection.lol settings
+        if os.getenv('ROOM_ID'):
+            self.data['objection']['room_id'] = os.getenv('ROOM_ID')
+            print("🌍 Room ID loaded from environment variable")
+        if os.getenv('BOT_USERNAME'):
+            self.data['objection']['bot_username'] = os.getenv('BOT_USERNAME')
+            print("🌍 Bot username loaded from environment variable")
+        
+        # Bot settings
+        if os.getenv('CHARACTER_ID'):
+            try:
+                self.data['settings']['character_id'] = int(os.getenv('CHARACTER_ID'))
+                print("🌍 Character ID loaded from environment variable")
+            except ValueError:
+                print(f"❌ Invalid CHARACTER_ID environment variable")
+        if os.getenv('POSE_ID'):
+            try:
+                self.data['settings']['pose_id'] = int(os.getenv('POSE_ID'))
+                print("🌍 Pose ID loaded from environment variable")
+            except ValueError:
+                print(f"❌ Invalid POSE_ID environment variable")
+        if os.getenv('MAX_MESSAGES'):
+            try:
+                self.data['settings']['max_messages'] = int(os.getenv('MAX_MESSAGES'))
+                print("🌍 Max messages loaded from environment variable")
+            except ValueError:
+                print(f"❌ Invalid MAX_MESSAGES environment variable")
+        if os.getenv('DELETE_COMMANDS'):
+            delete_commands_str = os.getenv('DELETE_COMMANDS').lower()
+            self.data['settings']['delete_commands'] = delete_commands_str in ('true', '1', 'yes', 'on')
+            print(f"🌍 Delete commands loaded from environment variable: {self.data['settings']['delete_commands']}")
+        if os.getenv('SHOW_JOIN_LEAVE'):
+            show_join_leave_str = os.getenv('SHOW_JOIN_LEAVE').lower()
+            self.data['settings']['show_join_leave'] = show_join_leave_str in ('true', '1', 'yes', 'on')
+            print(f"🌍 Show join/leave loaded from environment variable: {self.data['settings']['show_join_leave']}")
         
         print("🌍 Environment variable overrides applied")
     def create_default_config(self):
@@ -367,9 +407,10 @@ class DiscordCourtBot(discord.Client):
                     
                     # Remove old startup messages and send new one
                     await self.remove_previous_startup_messages()
+                    max_messages = self.config.get('settings', 'max_messages')
                     startup_embed = discord.Embed(
                         title="🌉 CourtDog Online",
-                        description="Ruff (Bridge reconnected and is now active between Discord and Objection.lol. Only 25 messages will be visible at a time.)",
+                        description=f"Ruff (Bridge reconnected and is now active between Discord and Objection.lol. Only {max_messages} messages will be visible at a time.)",
                         color=0x00ff00
                     )
                     startup_embed.add_field(
@@ -878,9 +919,10 @@ class DiscordCourtBot(discord.Client):
             await self.remove_previous_startup_messages()
             
             # Send startup message with commands info
+            max_messages = self.config.get('settings', 'max_messages')
             embed = discord.Embed(
                 title="🌉 CourtDog Online",
-                description="Ruff (Bridge is now active between Discord and Objection.lol. Only 25 messages will be visible at a time.)",
+                description=f"Ruff (Bridge is now active between Discord and Objection.lol. Only {max_messages} messages will be visible at a time.)",
                 color=0x00ff00
             )
             embed.add_field(
@@ -1118,8 +1160,8 @@ class DiscordCourtBot(discord.Client):
             print(f"⚠️ Error during startup message cleanup: {e}")
 
     async def cleanup_messages(self):
-        """Delete old messages to maintain message limit - keep only last 25 messages"""
-        max_messages = 25  # Fixed limit
+        """Delete old messages to maintain message limit"""
+        max_messages = self.config.get('settings', 'max_messages')
         buffer_threshold = 3  # Only start deleting when 3+ messages over limit
 
         try:
