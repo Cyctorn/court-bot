@@ -9,9 +9,16 @@ services:
       # Only mount config.json if it exists, otherwise let the app create a default one
     environment:
       - PYTHONUNBUFFERED=1
-      # Discord settings (sensitive and deployment-specific)
+      # Discord settings (required)
       - DISCORD_TOKEN=${DISCORD_TOKEN}
       - DISCORD_CHANNEL_ID=${DISCORD_CHANNEL_ID}
       - DISCORD_GUILD_ID=${DISCORD_GUILD_ID}
+      - ROOM_ID=${ROOM_ID:-}
+      - BOT_USERNAME=${BOT_USERNAME:-}
+      - CHARACTER_ID=${CHARACTER_ID:-}
+      - POSE_ID=${POSE_ID:-}
+      - MAX_MESSAGES=${MAX_MESSAGES:-}
+      - DELETE_COMMANDS=${DELETE_COMMANDS:-}
+      - SHOW_JOIN_LEAVE=${SHOW_JOIN_LEAVE:-}
     stdin_open: true
     tty: true
