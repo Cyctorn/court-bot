@@ -420,7 +420,7 @@ class DiscordCourtBot(discord.Client):
                     )
                     startup_embed.add_field(
                         name="Admin Commands",
-                        value="/titlebar - Change courtroom title\n/slowmode - Set slow mode (requires 3 confirmations)\n/setpassword - Set/remove room password (requires 3 confirmations)\n/text - Change textbox appearance\n/aspect - Change aspect ratio\n/spectating - Enable/disable spectating",
+                        value="/titlebar - Change courtroom title\n/slowmode - Set slow mode (requires 3 confirmations)\n/setpassword - Set/remove room password (requires 3 confirmations)\n/text - Change textbox appearance\n/aspect - Change aspect ratio\n/spectating - Enable/disable spectating\n/bans - Show banned users list",
                         inline=False
                     )
                     startup_embed.add_field(
@@ -469,7 +469,7 @@ class DiscordCourtBot(discord.Client):
             )
             embed.add_field(
                 name="Admin Commands",
-                value="/titlebar - Change courtroom title (admin only)\n/slowmode - Set slow mode (admin only, requires 3 confirmations)\n/setpassword - Set/remove room password (admin only, requires 3 confirmations)\n/text - Change textbox appearance (admin only)\n/aspect - Change aspect ratio (admin only)\n/spectating - Enable/disable spectating (admin only)",
+                value="/titlebar - Change courtroom title (admin only)\n/slowmode - Set slow mode (admin only, requires 3 confirmations)\n/setpassword - Set/remove room password (admin only, requires 3 confirmations)\n/text - Change textbox appearance (admin only)\n/aspect - Change aspect ratio (admin only)\n/spectating - Enable/disable spectating (admin only)\n/bans - Show banned users list",
                 inline=False
             )
             embed.add_field(
@@ -909,6 +909,73 @@ class DiscordCourtBot(discord.Client):
                 print(f"❌ Spectating command error: {e}")
                 await interaction.followup.send(f"❌ Failed to change spectating settings: {str(e)}", ephemeral=False)
 
+        @self.tree.command(name="bans", description="Show list of banned users in the courtroom")
+        async def bans_command(interaction: discord.Interaction):
+            """Show list of banned users"""
+            await interaction.response.defer(ephemeral=False)
+            
+            if not self.objection_bot.connected:
+                await interaction.followup.send("❌ Not connected to objection.lol", ephemeral=False)
+                return
+            
+            # Refresh room data before showing bans
+            await self.objection_bot.refresh_room_data()
+            # Wait for the response to be processed
+            await asyncio.sleep(0.5)
+            
+            # Create embed with ban information
+            embed = discord.Embed(
+                title="🚫 Banned Users",
+                color=0xff0000
+            )
+            
+            # Add disclaimer if not admin
+            if not self.objection_bot.is_admin:
+                embed.add_field(
+                    name="⚠️ Accuracy Notice",
+                    value="The bot is currently not an admin, so this list may not be accurate or up-to-date. The ban list is only visible to room admins.",
+                    inline=False
+                )
+            
+            # Show ban list
+            if self.objection_bot.banned_users:
+                ban_list = []
+                for ban in self.objection_bot.banned_users:
+                    username = ban.get('username', 'Unknown')
+                    user_id = ban.get('id', 'Unknown ID')
+                    # Truncate ID for display
+                    short_id = user_id[:8] + "..." if len(user_id) > 8 else user_id
+                    ban_list.append(f"• **{username}** (`{short_id}`)")
+                
+                embed.add_field(
+                    name=f"Banned Users ({len(self.objection_bot.banned_users)})",
+                    value="\n".join(ban_list),
+                    inline=False
+                )
+            else:
+                if self.objection_bot.is_admin:
+                    embed.add_field(
+                        name="Status",
+                        value="No users are currently banned from this courtroom.",
+                        inline=False
+                    )
+                else:
+                    embed.add_field(
+                        name="Status",
+                        value="No ban data available. The bot must be an admin to view the ban list.",
+                        inline=False
+                    )
+            
+            # Add admin status indicator
+            admin_status = "🛡️ Yes" if self.objection_bot.is_admin else "❌ No"
+            embed.add_field(
+                name="Bot Admin Status",
+                value=admin_status,
+                inline=True
+            )
+            
+            await interaction.followup.send(embed=embed, ephemeral=False)
+
     async def on_ready(self):
         print(f'🤖 Discord bot logged in as {self.user}')
         self.bridge_channel = self.get_channel(self.channel_id)
@@ -932,7 +999,7 @@ class DiscordCourtBot(discord.Client):
             )
             embed.add_field(
                 name="Admin Commands",
-                value="/titlebar - Change courtroom title\n/slowmode - Set slow mode (requires 3 confirmations)\n/setpassword - Set/remove room password (requires 3 confirmations)\n/text - Change textbox appearance\n/aspect - Change aspect ratio\n/spectating - Enable/disable spectating",
+                value="/titlebar - Change courtroom title\n/slowmode - Set slow mode (requires 3 confirmations)\n/setpassword - Set/remove room password (requires 3 confirmations)\n/text - Change textbox appearance\n/aspect - Change aspect ratio\n/spectating - Enable/disable spectating\n/bans - Show banned users list",
                 inline=False
             )
             embed.add_field(
@@ -1363,6 +1430,7 @@ class ObjectionBot:
         # Admin and moderation settings
         self.is_admin = False
         self.current_mods = set()  # Set of current moderator user IDs
+        self.banned_users = []  # List of banned users (only available when admin)
         
         # For Discord bridge compatibility
         self._username_change_event = asyncio.Event()
@@ -1570,6 +1638,18 @@ class ObjectionBot:
                             await self.handle_update_mods(data[1])
                     except json.JSONDecodeError as e:
                         print(f"JSON decode error for update mods: {e}")
+            
+            elif message.startswith('42["update_room_admin"'):
+                # Handle admin-only room updates (includes ban list)
+                start = message.find('[')
+                if start > 0:
+                    json_str = message[start:]
+                    try:
+                        data = json.loads(json_str)
+                        if len(data) > 1:
+                            await self.handle_update_room_admin(data[1])
+                    except json.JSONDecodeError as e:
+                        print(f"JSON decode error for update_room_admin: {e}")
             
             elif message.startswith('2'):
                 # Ping message from server, respond with pong
@@ -1926,6 +2006,24 @@ class ObjectionBot:
             print(f"[MOD] Current moderators: {mod_usernames}")
         else:
             print(f"[MOD] Warning: Expected list but got {type(mod_list)}: {mod_list}")
+    
+    async def handle_update_room_admin(self, admin_data):
+        """Handle admin-only room updates (includes ban list and other admin settings)"""
+        print(f"[ADMIN] Received update_room_admin: {admin_data}")
+        
+        # Extract ban list if present
+        if isinstance(admin_data, dict) and 'bans' in admin_data:
+            self.banned_users = admin_data['bans']
+            if self.banned_users:
+                print(f"[ADMIN] Updated ban list: {len(self.banned_users)} banned user(s)")
+                for ban in self.banned_users:
+                    username = ban.get('username', 'Unknown')
+                    user_id = ban.get('id', 'Unknown')
+                    print(f"  - {username} (ID: {user_id[:8]}...)")
+            else:
+                print(f"[ADMIN] Ban list is empty")
+        else:
+            print(f"[ADMIN] No ban data in update_room_admin")
     
     async def handle_mod_request(self, user_id):
         """Handle moderator request from a user"""
