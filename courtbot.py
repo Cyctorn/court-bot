@@ -929,14 +929,6 @@ class DiscordCourtBot(discord.Client):
                 color=0xff0000
             )
             
-            # Add disclaimer if not admin
-            if not self.objection_bot.is_admin:
-                embed.add_field(
-                    name="⚠️ Accuracy Notice",
-                    value="The bot is currently not an admin, so this list may not be accurate or up-to-date. The ban list is only visible to room admins.",
-                    inline=False
-                )
-            
             # Show ban list
             if self.objection_bot.banned_users:
                 ban_list = []
@@ -953,26 +945,11 @@ class DiscordCourtBot(discord.Client):
                     inline=False
                 )
             else:
-                if self.objection_bot.is_admin:
-                    embed.add_field(
-                        name="Status",
-                        value="No users are currently banned from this courtroom.",
-                        inline=False
-                    )
-                else:
-                    embed.add_field(
-                        name="Status",
-                        value="No ban data available. The bot must be an admin to view the ban list.",
-                        inline=False
-                    )
-            
-            # Add admin status indicator
-            admin_status = "🛡️ Yes" if self.objection_bot.is_admin else "❌ No"
-            embed.add_field(
-                name="Bot Admin Status",
-                value=admin_status,
-                inline=True
-            )
+                embed.add_field(
+                    name="Status",
+                    value="No users are currently banned from this courtroom.",
+                    inline=False
+                )
             
             await interaction.followup.send(embed=embed, ephemeral=False)
 
