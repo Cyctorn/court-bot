@@ -420,7 +420,7 @@ class DiscordCourtBot(discord.Client):
                     )
                     startup_embed.add_field(
                         name="Admin Commands",
-                        value="/titlebar - Change courtroom title\n/slowmode - Set slow mode (requires 3 confirmations)\n/setpassword - Set/remove room password (requires 3 confirmations)\n/text - Change textbox appearance\n/aspect - Change aspect ratio\n/spectating - Enable/disable spectating\n/bans - Show banned users list",
+                        value="/titlebar - Change courtroom title\n/slowmode - Set slow mode (requires 3 confirmations)\n/setpassword - Set/remove room password (requires 3 confirmations)\n/text - Change textbox appearance\n/aspect - Change aspect ratio\n/spectating - Enable/disable spectating\n/bans - Show banned users list\n/unban - Unban a user",
                         inline=False
                     )
                     startup_embed.add_field(
@@ -469,7 +469,7 @@ class DiscordCourtBot(discord.Client):
             )
             embed.add_field(
                 name="Admin Commands",
-                value="/titlebar - Change courtroom title (admin only)\n/slowmode - Set slow mode (admin only, requires 3 confirmations)\n/setpassword - Set/remove room password (admin only, requires 3 confirmations)\n/text - Change textbox appearance (admin only)\n/aspect - Change aspect ratio (admin only)\n/spectating - Enable/disable spectating (admin only)\n/bans - Show banned users list",
+                value="/titlebar - Change courtroom title (admin only)\n/slowmode - Set slow mode (admin only, requires 3 confirmations)\n/setpassword - Set/remove room password (admin only, requires 3 confirmations)\n/text - Change textbox appearance (admin only)\n/aspect - Change aspect ratio (admin only)\n/spectating - Enable/disable spectating (admin only)\n/bans - Show banned users list\n/unban - Unban a user (admin only)",
                 inline=False
             )
             embed.add_field(
@@ -953,6 +953,70 @@ class DiscordCourtBot(discord.Client):
             
             await interaction.followup.send(embed=embed, ephemeral=False)
 
+        @self.tree.command(name="unban", description="Unban a user from the courtroom (admin only)")
+        @app_commands.describe(username="Username of the banned user to unban")
+        async def unban_command(interaction: discord.Interaction, username: str):
+            """Unban a user from the courtroom"""
+            await interaction.response.defer(ephemeral=False)
+            
+            if not self.objection_bot.connected:
+                await interaction.followup.send("❌ Not connected to objection.lol", ephemeral=False)
+                return
+            
+            if not self.objection_bot.is_admin:
+                await interaction.followup.send("❌ Need admin status in the courtroom to unban users", ephemeral=False)
+                return
+            
+            # Refresh room data before attempting unban
+            await self.objection_bot.refresh_room_data()
+            # Wait for the response to be processed
+            await asyncio.sleep(0.5)
+            
+            # Find the banned user by username (case-insensitive)
+            username_lower = username.lower()
+            banned_user = None
+            for ban in self.objection_bot.banned_users:
+                if ban.get('username', '').lower() == username_lower:
+                    banned_user = ban
+                    break
+            
+            if not banned_user:
+                # Show available banned users if username not found
+                if self.objection_bot.banned_users:
+                    available_users = ', '.join([ban.get('username', 'Unknown') for ban in self.objection_bot.banned_users])
+                    await interaction.followup.send(
+                        f"❌ User **{username}** not found in ban list.\n\n**Currently banned users:** {available_users}",
+                        ephemeral=False
+                    )
+                else:
+                    await interaction.followup.send("❌ No users are currently banned from this courtroom.", ephemeral=False)
+                return
+            
+            # Attempt to unban the user
+            user_id = banned_user.get('id')
+            ban_username = banned_user.get('username')
+            
+            try:
+                success = await self.objection_bot.remove_ban(user_id)
+                if success:
+                    embed = discord.Embed(
+                        title="✅ User Unbanned",
+                        description=f"Successfully unbanned **{ban_username}**",
+                        color=0x00ff00
+                    )
+                    embed.add_field(
+                        name="User ID",
+                        value=f"`{user_id[:8]}...`",
+                        inline=False
+                    )
+                    await interaction.followup.send(embed=embed, ephemeral=False)
+                    print(f"[UNBAN] Discord user {interaction.user.display_name} unbanned: {ban_username}")
+                else:
+                    await interaction.followup.send(f"❌ Failed to unban **{ban_username}**. Check bot status and permissions.", ephemeral=False)
+            except Exception as e:
+                print(f"❌ Unban command error: {e}")
+                await interaction.followup.send(f"❌ Failed to unban user: {str(e)}", ephemeral=False)
+
     async def on_ready(self):
         print(f'🤖 Discord bot logged in as {self.user}')
         self.bridge_channel = self.get_channel(self.channel_id)
@@ -976,7 +1040,7 @@ class DiscordCourtBot(discord.Client):
             )
             embed.add_field(
                 name="Admin Commands",
-                value="/titlebar - Change courtroom title\n/slowmode - Set slow mode (requires 3 confirmations)\n/setpassword - Set/remove room password (requires 3 confirmations)\n/text - Change textbox appearance\n/aspect - Change aspect ratio\n/spectating - Enable/disable spectating\n/bans - Show banned users list",
+                value="/titlebar - Change courtroom title\n/slowmode - Set slow mode (requires 3 confirmations)\n/setpassword - Set/remove room password (requires 3 confirmations)\n/text - Change textbox appearance\n/aspect - Change aspect ratio\n/spectating - Enable/disable spectating\n/bans - Show banned users list\n/unban - Unban a user",
                 inline=False
             )
             embed.add_field(
@@ -2387,6 +2451,26 @@ class ObjectionBot:
             return True
         except Exception as e:
             print(f"[SPECTATING] Error updating spectating: {e}")
+            return False
+
+    async def remove_ban(self, user_id):
+        """Remove a ban from a user (admin only)"""
+        if not self.is_admin:
+            print("[UNBAN] Cannot remove ban - bot is not admin")
+            return False
+        
+        if not self.connected or not self.websocket:
+            print("[UNBAN] Cannot remove ban - not connected")
+            return False
+        
+        # Send remove_ban to server
+        try:
+            message = f'42["remove_ban","{user_id}"]'
+            await self.websocket.send(message)
+            print(f"[UNBAN] Sent remove_ban for user ID: {user_id[:8]}...")
+            return True
+        except Exception as e:
+            print(f"[UNBAN] Error removing ban: {e}")
             return False
 
     async def refresh_room_data(self):
