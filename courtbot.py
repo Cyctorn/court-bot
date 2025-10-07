@@ -935,9 +935,8 @@ class DiscordCourtBot(discord.Client):
                 for ban in self.objection_bot.banned_users:
                     username = ban.get('username', 'Unknown')
                     user_id = ban.get('id', 'Unknown ID')
-                    # Truncate ID for display
-                    short_id = user_id[:8] + "..." if len(user_id) > 8 else user_id
-                    ban_list.append(f"• **{username}** (`{short_id}`)")
+                    # Show full ID for copying
+                    ban_list.append(f"• **{username}**\n  ID: `{user_id}`")
                 
                 embed.add_field(
                     name=f"Banned Users ({len(self.objection_bot.banned_users)})",
@@ -954,7 +953,7 @@ class DiscordCourtBot(discord.Client):
             await interaction.followup.send(embed=embed, ephemeral=False)
 
         @self.tree.command(name="unban", description="Unban a user from the courtroom (admin only)")
-        @app_commands.describe(username="Username of the banned user to unban")
+        @app_commands.describe(username="Username or full user ID of the banned user to unban")
         async def unban_command(interaction: discord.Interaction, username: str):
             """Unban a user from the courtroom"""
             await interaction.response.defer(ephemeral=False)
@@ -972,15 +971,23 @@ class DiscordCourtBot(discord.Client):
             # Wait for the response to be processed
             await asyncio.sleep(0.5)
             
-            # Find the banned user by username (case-insensitive)
-            username_lower = username.lower()
-            banned_user = None
-            for ban in self.objection_bot.banned_users:
-                if ban.get('username', '').lower() == username_lower:
-                    banned_user = ban
-                    break
+            # Check if input looks like a UUID (user ID)
+            is_uuid = re.match(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', username.lower())
             
-            if not banned_user:
+            matching_bans = []
+            if is_uuid:
+                # Search by user ID
+                for ban in self.objection_bot.banned_users:
+                    if ban.get('id', '').lower() == username.lower():
+                        matching_bans.append(ban)
+            else:
+                # Search by username (case-insensitive)
+                username_lower = username.lower()
+                for ban in self.objection_bot.banned_users:
+                    if ban.get('username', '').lower() == username_lower:
+                        matching_bans.append(ban)
+            
+            if not matching_bans:
                 # Show available banned users if username not found
                 if self.objection_bot.banned_users:
                     available_users = ', '.join([ban.get('username', 'Unknown') for ban in self.objection_bot.banned_users])
@@ -992,7 +999,37 @@ class DiscordCourtBot(discord.Client):
                     await interaction.followup.send("❌ No users are currently banned from this courtroom.", ephemeral=False)
                 return
             
-            # Attempt to unban the user
+            # Check if there are multiple users with the same name
+            if len(matching_bans) > 1:
+                # Multiple users with same name - show them with IDs
+                embed = discord.Embed(
+                    title="⚠️ Multiple Users Found",
+                    description=f"Found **{len(matching_bans)}** banned users with the username **{username}**",
+                    color=0xff9500
+                )
+                
+                duplicate_list = []
+                for i, ban in enumerate(matching_bans, 1):
+                    user_id = ban.get('id', 'Unknown ID')
+                    short_id = user_id[:8] + "..." if len(user_id) > 8 else user_id
+                    duplicate_list.append(f"{i}. **{ban.get('username', 'Unknown')}** - ID: `{short_id}`")
+                
+                embed.add_field(
+                    name="Banned Users with this Username",
+                    value="\n".join(duplicate_list),
+                    inline=False
+                )
+                embed.add_field(
+                    name="How to Unban",
+                    value="Please use the full user ID to unban. Check `/bans` for the complete IDs.",
+                    inline=False
+                )
+                
+                await interaction.followup.send(embed=embed, ephemeral=False)
+                return
+            
+            # Only one user with this name - proceed with unban
+            banned_user = matching_bans[0]
             user_id = banned_user.get('id')
             ban_username = banned_user.get('username')
             
