@@ -268,8 +268,8 @@ class DiscordCourtBot(discord.Client):
         return matches
 
     def extract_evidence_commands(self, text):
-        """Extract evidence IDs from text containing [#evdi123456] commands"""
-        evidence_pattern = r'\[#evdi(\d+)\]'
+        """Extract evidence IDs from text containing [#evdi123456] or [#evd123456] commands"""
+        evidence_pattern = r'\[#evdi?(\d+)\]'
         matches = re.findall(evidence_pattern, text)
         return matches
 
