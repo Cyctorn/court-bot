@@ -267,6 +267,54 @@ class DiscordCourtBot(discord.Client):
         matches = re.findall(bgm_pattern, text)
         return matches
 
+    def extract_evidence_commands(self, text):
+        """Extract evidence IDs from text containing [#evdi123456] commands"""
+        evidence_pattern = r'\[#evdi(\d+)\]'
+        matches = re.findall(evidence_pattern, text)
+        return matches
+
+    async def fetch_evidence_data(self, evidence_id):
+        """Fetch evidence data from objection.lol's API by evidence ID"""
+        try:
+            # Use the evidence API endpoint
+            api_url = f"https://objection.lol/api/assets/evidence/{evidence_id}"
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.get(api_url) as response:
+                    if response.status == 200:
+                        evidence_data = await response.json()
+                        # Extract evidence information
+                        evidence_url = evidence_data.get('url')
+                        evidence_name = evidence_data.get('name', 'Unknown Evidence')
+                        evidence_type = evidence_data.get('type', 'image')
+                        is_icon = evidence_data.get('isIcon', False)
+                        
+                        if evidence_url:
+                            # Handle relative URLs by converting them to full objection.lol URLs
+                            if evidence_url.startswith('/'):
+                                evidence_url = f"https://objection.lol{evidence_url}"
+                            
+                            print(f"📄 Found evidence {evidence_id}: '{evidence_name}' -> {evidence_url}")
+                            return {
+                                'url': evidence_url,
+                                'name': evidence_name,
+                                'type': evidence_type,
+                                'isIcon': is_icon,
+                                'id': evidence_id
+                            }
+                        else:
+                            print(f"❌ No URL found in evidence data for ID {evidence_id}")
+                            return None
+                    elif response.status == 404:
+                        print(f"❌ Evidence ID {evidence_id} not found")
+                        return None
+                    else:
+                        print(f"❌ Failed to fetch evidence data for ID {evidence_id} (status: {response.status})")
+                        return None
+        except Exception as e:
+            print(f"❌ Error fetching evidence data for ID {evidence_id}: {e}")
+            return None
+
     def strip_color_codes(self, text):
         """Remove objection.lol color codes from text"""
         import re
@@ -1229,6 +1277,48 @@ class DiscordCourtBot(discord.Client):
                         await self.bridge_channel.send(embed=music_embed)
                         print(f"🎵 Posted music info for BGM {bgm_id}: '{music_data['name']}' -> {music_data['url']}")
             
+            # Check for evidence commands and fetch evidence data
+            evidence_ids = self.extract_evidence_commands(message)
+            if evidence_ids:
+                for evidence_id in evidence_ids:
+                    evidence_data = await self.fetch_evidence_data(evidence_id)
+                    if evidence_data:
+                        # Send the evidence as a rich embed with image
+                        evidence_embed = discord.Embed(
+                            title="📄 Evidence Presented",
+                            description=f"**{username}** presented evidence",
+                            color=0xe67e22
+                        )
+                        evidence_embed.add_field(
+                            name="Evidence Name",
+                            value=evidence_data['name'],
+                            inline=True
+                        )
+                        evidence_embed.add_field(
+                            name="Evidence ID",
+                            value=f"#{evidence_data['id']}",
+                            inline=True
+                        )
+                        evidence_embed.add_field(
+                            name="Type",
+                            value=evidence_data['type'].capitalize(),
+                            inline=True
+                        )
+                        
+                        # Set the image in the embed
+                        if evidence_data['type'] == 'image':
+                            evidence_embed.set_image(url=evidence_data['url'])
+                        else:
+                            # For non-image evidence, include the URL as a field
+                            evidence_embed.add_field(
+                                name="Evidence File",
+                                value=evidence_data['url'],
+                                inline=False
+                            )
+                        
+                        await self.bridge_channel.send(embed=evidence_embed)
+                        print(f"📄 Posted evidence {evidence_id}: '{evidence_data['name']}' -> {evidence_data['url']}")
+            
             unix_timestamp = int(time.time())
             formatted_message = f"**{username}**:\n{cleaned_message}\n-# <t:{unix_timestamp}:T>"
             sent_message = await self.bridge_channel.send(formatted_message)
@@ -1729,6 +1819,18 @@ class ObjectionBot:
                     except json.JSONDecodeError as e:
                         print(f"JSON decode error for update_room_admin: {e}")
             
+            elif message.startswith('42["add_evidence"'):
+                # Handle evidence added events
+                start = message.find('[')
+                if start > 0:
+                    json_str = message[start:]
+                    try:
+                        data = json.loads(json_str)
+                        if len(data) > 1:
+                            await self.handle_add_evidence(data[1])
+                    except json.JSONDecodeError as e:
+                        print(f"JSON decode error for add_evidence: {e}")
+            
             elif message.startswith('2'):
                 # Ping message from server, respond with pong
                 await self.websocket.send("3")
@@ -2102,6 +2204,65 @@ class ObjectionBot:
                 print(f"[ADMIN] Ban list is empty")
         else:
             print(f"[ADMIN] No ban data in update_room_admin")
+    
+    async def handle_add_evidence(self, evidence_data):
+        """Handle evidence added events"""
+        print(f"[EVIDENCE] Received add_evidence: {evidence_data}")
+        
+        if isinstance(evidence_data, dict):
+            evidence_id = evidence_data.get('evidenceId')
+            evidence_name = evidence_data.get('name', 'Unknown Evidence')
+            evidence_url = evidence_data.get('url', '')
+            icon_url = evidence_data.get('iconUrl', '')
+            evidence_type = evidence_data.get('type', 'image')
+            username = evidence_data.get('username', 'Unknown')
+            description = evidence_data.get('description', '')
+            
+            print(f"[EVIDENCE] {username} added evidence: '{evidence_name}' (ID: {evidence_id})")
+            
+            # Send to Discord if connected
+            if self.discord_bot and self.discord_bot.bridge_channel:
+                evidence_embed = discord.Embed(
+                    title="📄 Evidence Added",
+                    description=f"**{username}** added new evidence to the court record",
+                    color=0xe67e22
+                )
+                evidence_embed.add_field(
+                    name="Evidence Name",
+                    value=evidence_name,
+                    inline=True
+                )
+                evidence_embed.add_field(
+                    name="Evidence ID",
+                    value=f"#{evidence_id}",
+                    inline=True
+                )
+                evidence_embed.add_field(
+                    name="Type",
+                    value=evidence_type.capitalize(),
+                    inline=True
+                )
+                
+                if description:
+                    evidence_embed.add_field(
+                        name="Description",
+                        value=description,
+                        inline=False
+                    )
+                
+                # Use the image URL for display
+                display_url = icon_url if icon_url else evidence_url
+                if evidence_type == 'image' and display_url:
+                    evidence_embed.set_image(url=display_url)
+                elif display_url:
+                    evidence_embed.add_field(
+                        name="Evidence File",
+                        value=display_url,
+                        inline=False
+                    )
+                
+                await self.discord_bot.bridge_channel.send(embed=evidence_embed)
+                print(f"[EVIDENCE] Posted evidence to Discord: {evidence_name}")
     
     async def handle_mod_request(self, user_id):
         """Handle moderator request from a user"""
