@@ -633,12 +633,12 @@ class DiscordCourtBot(discord.Client):
             try:
                 # Revert to original bot username when speaking as the bot itself
                 original_username = self.config.get('objection', 'bot_username')
-                print(f"🎭 Shaba command: Changing to bot username: {original_username}")
+                log_verbose(f"🎭 Shaba command: Changing to bot username: {original_username}")
                 await self.objection_bot.change_username_and_wait(original_username)
-                print(f"🎭 Shaba command: Sending message with background color")
+                log_verbose(f"🎭 Shaba command: Sending message with background color")
                 await self.objection_bot.send_message("[#bgs122964]")
                 await interaction.followup.send("What the dog doin??", ephemeral=False)
-                print(f"🎭 Shaba command: Successfully executed")
+                log_verbose(f"🎭 Shaba command: Successfully executed")
             except Exception as e:
                 print(f"❌ Shaba command error: {e}")
                 await interaction.followup.send(f"❌ Failed to execute shaba command: {str(e)}", ephemeral=True)
@@ -1317,7 +1317,7 @@ class DiscordCourtBot(discord.Client):
         try:
             # Check if bot has permission to delete messages
             if not self.bridge_channel.permissions_for(self.bridge_channel.guild.me).manage_messages:
-                print("⚠️ Bot lacks 'Manage Messages' permission - cannot delete old startup messages")
+                log_verbose("⚠️ Bot lacks 'Manage Messages' permission - cannot delete old startup messages")
                 return
 
             deleted_count = 0
@@ -1331,17 +1331,17 @@ class DiscordCourtBot(discord.Client):
                     try:
                         await message.delete()
                         deleted_count += 1
-                        print(f"🧹 Deleted previous startup message")
+                        log_verbose(f"🧹 Deleted previous startup message")
                     except discord.NotFound:
                         pass  # Message already deleted
                     except Exception as e:
-                        print(f"⚠️ Failed to delete startup message: {e}")
+                        log_verbose(f"⚠️ Failed to delete startup message: {e}")
             
             if deleted_count > 0:
-                print(f"🧹 Cleaned up {deleted_count} old startup message(s)")
+                log_verbose(f"🧹 Cleaned up {deleted_count} old startup message(s)")
                 
         except Exception as e:
-            print(f"⚠️ Error during startup message cleanup: {e}")
+            log_verbose(f"⚠️ Error during startup message cleanup: {e}")
 
     async def cleanup_messages(self):
         """Delete old messages to maintain message limit"""
@@ -1783,11 +1783,11 @@ class ObjectionBot:
             elif message.startswith('2'):
                 # Ping message from server, respond with pong
                 await self.websocket.send("3")
-                print("📡 Received ping, sent pong")
+                log_verbose("📡 Received ping, sent pong")
                 
             elif message.startswith('3'):
                 # Pong message from server (response to our ping)
-                print("📡 Received pong")
+                log_verbose("📡 Received pong")
             
         except Exception as e:
             print(f"❌ Error processing message: {e}")
@@ -1845,7 +1845,7 @@ class ObjectionBot:
 
         # Check for pairing request message
         if "Please pair with me CourtDog-sama" in text and self._pending_pair_request and user_id != self.user_id:
-            print(f"[PAIRING] Auto-accepting pairing due to message: {text}")
+            log_verbose(f"[PAIRING] Auto-accepting pairing due to message: {text}")
             await self.accept_pairing(self._pending_pair_request)
             self._pending_pair_request = None
             return
@@ -1872,14 +1872,14 @@ class ObjectionBot:
             
             # Ignore messages with Discord user mentions (<@numbers>)
             if re.search(r'<@\d+>', text):
-                print(f"🚫 Ignoring objection.lol message with user mention: {text[:50]}...")
+                log_verbose(f"🚫 Ignoring objection.lol message with user mention: {text[:50]}...")
                 return
             
             # Get username from our stored mapping
             username = self.user_names.get(user_id)
             # If we don't have the username, request room update and wait for response
             if username is None:
-                print(f"🔄 Unknown user {user_id[:8]}, requesting room update...")
+                log_verbose(f"🔄 Unknown user {user_id[:8]}, requesting room update...")
                 await self.websocket.send('42["get_room"]')
                 # Wait a moment for the room update to be processed
                 await asyncio.sleep(0.5)
@@ -1888,10 +1888,10 @@ class ObjectionBot:
                 if username is None:
                     # Still unknown after refresh, use fallback
                     username = f"User-{user_id[:8]}"
-                    print(f"⚠️ User {user_id[:8]} still unknown after refresh, using fallback: {username}")
+                    log_verbose(f"⚠️ User {user_id[:8]} still unknown after refresh, using fallback: {username}")
                 else:
-                    print(f"✅ Found username after refresh: {username}")
-            print(f"📨 Received: {username}: {text}")
+                    log_verbose(f"✅ Found username after refresh: {username}")
+            log_verbose(f"📨 Received: {username}: {text}")
             # Send to Discord if connected
             if self.discord_bot:
                 await self.discord_bot.send_to_discord(username, text)
@@ -1899,15 +1899,15 @@ class ObjectionBot:
     async def handle_room_update(self, data):
         """Handle room updates to get user information"""
         # Log the raw data structure for debugging
-        print(f"[DEBUG] Room update data keys: {list(data.keys()) if isinstance(data, dict) else 'Not a dict'}")
+        log_verbose(f"[DEBUG] Room update data keys: {list(data.keys()) if isinstance(data, dict) else 'Not a dict'}")
         
         # The data parameter IS the room object, users are nested inside it
         users = data.get('users', [])
         
         # Validate room update data - only process if we have valid user data
         if not isinstance(users, list):
-            print(f"⚠️ Invalid room update: users is not a list: {type(users)}")
-            print(f"[DEBUG] Full data structure: {data}")
+            log_verbose(f"⚠️ Invalid room update: users is not a list: {type(users)}")
+            log_verbose(f"[DEBUG] Full data structure: {data}")
             return
             
         # Check if this looks like a valid room update with actual user data
@@ -1916,13 +1916,13 @@ class ObjectionBot:
             if isinstance(user, dict) and 'id' in user and 'username' in user:
                 valid_users.append(user)
         
-        print(f"[DEBUG] Found {len(users)} users in update, {len(valid_users)} valid users")
+        log_verbose(f"[DEBUG] Found {len(users)} users in update, {len(valid_users)} valid users")
         
         # Don't update user mapping if we got empty or invalid user data
         # This prevents losing all users due to incomplete server responses
         if not valid_users and self.user_names:
-            print(f"⚠️ Received empty user list in room update - keeping existing user data")
-            print(f"👥 Existing users preserved: {list(self.user_names.values())}")
+            log_verbose(f"⚠️ Received empty user list in room update - keeping existing user data")
+            log_verbose(f"👥 Existing users preserved: {list(self.user_names.values())}")
             # Still process other room data like mods, but don't touch user mapping
         else:
             # Build new username mapping from authoritative room data
@@ -1935,7 +1935,7 @@ class ObjectionBot:
                 user_id = user['id']
                 username = user['username']
                 new_user_names[user_id] = username
-                print(f"[DEBUG] Mapping user: {user_id[:8]}... → {username}")
+                log_verbose(f"[DEBUG] Mapping user: {user_id[:8]}... → {username}")
             
             # Atomically replace the old mapping to avoid race conditions
             self.user_names = new_user_names
@@ -1948,11 +1948,11 @@ class ObjectionBot:
             
             if removed_users:
                 removed_usernames = [old_user_names.get(uid, f"User-{uid[:8]}") for uid in removed_users]
-                print(f"🧹 Cleaned up {len(removed_users)} stale user entries: {removed_usernames}")
+                log_verbose(f"🧹 Cleaned up {len(removed_users)} stale user entries: {removed_usernames}")
             
             if added_users:
                 added_usernames = [new_user_names.get(uid, f"User-{uid[:8]}") for uid in added_users]
-                print(f"➕ Added {len(added_users)} new users: {added_usernames}")
+                log_verbose(f"➕ Added {len(added_users)} new users: {added_usernames}")
             
             # Log current users
             usernames = [user.get('username') for user in valid_users]
@@ -1977,18 +1977,18 @@ class ObjectionBot:
             for user in valid_users:
                 if user.get('id') == self.user_id and self._pending_username:
                     if user.get('username') == self._pending_username:
-                        print(f"[DEBUG] Username for our user_id matched pending username: {self._pending_username}")
+                        log_verbose(f"[DEBUG] Username for our user_id matched pending username: {self._pending_username}")
                         self._username_change_event.set()
     
     async def handle_me_response(self, data):
         """Handle 'me' response to get our user ID"""
         if 'user' in data and 'id' in data['user']:
             self.user_id = data['user']['id']
-            print(f"🤖 Bot ID: {self.user_id}")
+            log_verbose(f"🤖 Bot ID: {self.user_id}")
     
     async def handle_user_joined(self, data):
         """Handle user_joined events"""
-        print(f"[DEBUG] Received user_joined: {data}")
+        log_verbose(f"[DEBUG] Received user_joined: {data}")
 
         if isinstance(data, dict):
             user_id = data.get('id')
@@ -2062,15 +2062,15 @@ class ObjectionBot:
     
     async def handle_create_pair(self, data):
         """Handle pairing requests"""
-        print(f"[PAIRING] Received create_pair: {data}")
+        log_verbose(f"[PAIRING] Received create_pair: {data}")
         # Only respond if our user_id is in the pairs list
         pairs = data.get('pairs', [])
         if not self.user_id:
-            print("[PAIRING] Bot user_id not set yet, ignoring create_pair.")
+            log_verbose("[PAIRING] Bot user_id not set yet, ignoring create_pair.")
             return
         found = any(pair.get('userId') == self.user_id for pair in pairs)
         if not found:
-            print(f"[PAIRING] Ignoring create_pair: bot user_id {self.user_id} not in pairs.")
+            log_verbose(f"[PAIRING] Ignoring create_pair: bot user_id {self.user_id} not in pairs.")
             return
         if self.discord_bot:
             await self.discord_bot.send_pairing_request_to_discord(data, self)
@@ -2273,11 +2273,11 @@ class ObjectionBot:
     
     async def change_username_and_wait(self, new_username, timeout=2.0):
         """Change the bot's username using WebSocket"""
-        print(f"[DEBUG] Requesting username change to: {new_username}")
+        log_verbose(f"[DEBUG] Requesting username change to: {new_username}")
         
         # Check if WebSocket is still connected
         if not self.connected:
-            print("❌ Cannot change username - Bot marked as disconnected")
+            log_verbose("❌ Cannot change username - Bot marked as disconnected")
             # Trigger auto-reconnect if not already in progress
             if self.auto_reconnect:
                 await self.start_auto_reconnect()
@@ -2426,7 +2426,7 @@ class ObjectionBot:
         try:
             message = f'42["message",{json.dumps(message_data)}]'
             await self.websocket.send(message)
-            print(f"📤 Sent: {text}")
+            log_verbose(f"📤 Sent: {text}")
             return True
         except Exception as e:
             print(f"❌ Send failed: {e}")
