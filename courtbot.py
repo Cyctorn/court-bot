@@ -169,6 +169,10 @@ class Config:
             show_join_leave_str = os.getenv('SHOW_JOIN_LEAVE').lower()
             self.data['settings']['show_join_leave'] = show_join_leave_str in ('true', '1', 'yes', 'on')
             print(f"🌍 Show join/leave loaded from environment variable: {self.data['settings']['show_join_leave']}")
+        if os.getenv('VERBOSE'):
+            verbose_str = os.getenv('VERBOSE').lower()
+            self.data['settings']['verbose'] = verbose_str in ('true', '1', 'yes', 'on')
+            print(f"🌍 Verbose logging loaded from environment variable: {self.data['settings']['verbose']}")
         
         print("🌍 Environment variable overrides applied")
     def create_default_config(self):
@@ -185,7 +189,8 @@ class Config:
                 "pose_id": 4998989,
                 "max_messages": 50,
                 "delete_commands": True,
-                "show_join_leave": True
+                "show_join_leave": True,
+                "verbose": True
             }
         }
         
@@ -220,6 +225,24 @@ class Config:
             errors.append("Objection.lol room ID not configured")
         
         return errors
+
+# Global logging configuration
+VERBOSE_MODE = True
+
+def log_verbose(message):
+    """Log message only if verbose mode is enabled"""
+    if VERBOSE_MODE:
+        print(message)
+
+def log_message(source, username, message):
+    """Log a message in simple format for non-verbose mode"""
+    if VERBOSE_MODE:
+        # In verbose mode, this is handled by existing logs
+        pass
+    else:
+        # Simple format: (Source) Username: message
+        print(f"({source}) {username}: {message}")
+
 class DiscordCourtBot(discord.Client):
     async def fetch_music_url(self, bgm_id):
         """Fetch the actual external URL for a BGM ID from objection.lol's API"""
@@ -325,7 +348,7 @@ class DiscordCourtBot(discord.Client):
         # [#ts123] - text speed commands with any number
         color_pattern = r'\[#/[a-zA-Z]\]|\[#/c[a-fA-F0-9]{6}\]|\[/#\]|\[#ts\d+\]'
         cleaned = re.sub(color_pattern, '', text)
-        print(f"🎨 Color strip: '{text}' → '{cleaned}'")  # Debug line
+        log_verbose(f"🎨 Color strip: '{text}' → '{cleaned}'")  # Debug line
         return cleaned
 
     def extract_media_urls(self, message):
@@ -338,13 +361,13 @@ class DiscordCourtBot(discord.Client):
             if (attachment.content_type and attachment.content_type.startswith('image/')) or \
                any(attachment.filename.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp']):
                 media_urls.append(attachment.url)
-                print(f"🖼️ Found image attachment: {attachment.filename} - {attachment.url}")
+                log_verbose(f"🖼️ Found image attachment: {attachment.filename} - {attachment.url}")
             
             # Check if it's a video by file extension or content type
             elif (attachment.content_type and attachment.content_type.startswith('video/')) or \
                  any(attachment.filename.lower().endswith(ext) for ext in ['.mp4', '.mov', '.avi', '.mkv', '.webm', '.flv', '.wmv', '.m4v']):
                 media_urls.append(attachment.url)
-                print(f"🎥 Found video attachment: {attachment.filename} - {attachment.url}")
+                log_verbose(f"🎥 Found video attachment: {attachment.filename} - {attachment.url}")
         
         return media_urls
     def __init__(self, objection_bot, config):
@@ -1113,9 +1136,9 @@ class DiscordCourtBot(discord.Client):
             new_username = f"{display_name} ({base_name})"
             
             # Debug logging to prevent impersonation issues
-            print(f"🔍 Processing message from Discord user: {discord_name} (ID: {user_id})")
-            print(f"🔍 Display name for message: {display_name}")
-            print(f"🔍 Constructed username: {new_username} (length: {len(new_username)})")
+            log_verbose(f"🔍 Processing message from Discord user: {discord_name} (ID: {user_id})")
+            log_verbose(f"🔍 Display name for message: {display_name}")
+            log_verbose(f"🔍 Constructed username: {new_username} (length: {len(new_username)})")
             
             # Apply user's custom color if set
             user_color = self.colors.get(user_id)
@@ -1138,25 +1161,27 @@ class DiscordCourtBot(discord.Client):
                 # Username fits, use it and send content without prefix
                 target_username = new_username
                 send_content = colored_content
-                print(f"✅ Username fits, using: {target_username}")
+                log_verbose(f"✅ Username fits, using: {target_username}")
             else:
                 # Username too long, ALWAYS use base name and ALWAYS prefix message with user's name
                 target_username = base_name
                 send_content = f"{display_name}: {colored_content}"
-                print(f"📏 Username too long, using base name: {target_username}, prefixing with: {display_name}")
+                log_verbose(f"📏 Username too long, using base name: {target_username}, prefixing with: {display_name}")
             
             # Always change username for each message to prevent impersonation
             username_changed = await self.objection_bot.change_username_and_wait(target_username)
             if not username_changed:
-                print("❌ Failed to change username - skipping message")
+                log_verbose("❌ Failed to change username - skipping message")
                 return
                 
             actual_username = target_username
             message_sent = await self.objection_bot.send_message(send_content)
             if message_sent:
-                print(f"🔄 Discord → Objection: {actual_username}: {send_content}")
+                # Log the message in simple format for non-verbose mode
+                log_message("Discord", display_name, message.content if message.content else "[media]")
+                log_verbose(f"🔄 Discord → Objection: {actual_username}: {send_content}")
             else:
-                print(f"❌ Failed to send message to objection.lol")
+                log_verbose(f"❌ Failed to send message to objection.lol")
             await self.cleanup_messages()
     async def send_to_discord(self, username, message):
         """Send a message from objection.lol to Discord"""
@@ -1197,7 +1222,7 @@ class DiscordCourtBot(discord.Client):
                             inline=False
                         )
                         await self.bridge_channel.send(embed=music_embed)
-                        print(f"🎵 Posted music info for BGM {bgm_id}: '{music_data['name']}' -> {music_data['url']}")
+                        log_verbose(f"🎵 Posted music info for BGM {bgm_id}: '{music_data['name']}' -> {music_data['url']}")
             
             # Check for evidence commands and fetch evidence data
             evidence_ids = self.extract_evidence_commands(message)
@@ -1239,12 +1264,14 @@ class DiscordCourtBot(discord.Client):
                             )
                         
                         await self.bridge_channel.send(embed=evidence_embed)
-                        print(f"📄 Posted evidence {evidence_id}: '{evidence_data['name']}' -> {evidence_data['url']}")
+                        log_verbose(f"📄 Posted evidence {evidence_id}: '{evidence_data['name']}' -> {evidence_data['url']}")
             
             unix_timestamp = int(time.time())
             formatted_message = f"**{username}**:\n{cleaned_message}\n-# <t:{unix_timestamp}:T>"
             sent_message = await self.bridge_channel.send(formatted_message)
-            print(f"🔄 Objection → Discord: {username}: {cleaned_message}")
+            # Log the message in simple format for non-verbose mode
+            log_message("Chatroom", username, cleaned_message)
+            log_verbose(f"🔄 Objection → Discord: {username}: {cleaned_message}")
             # Clean up old messages if needed
             await self.cleanup_messages()
     async def send_user_notification(self, username, action, user_list=None):
@@ -1335,14 +1362,14 @@ class DiscordCourtBot(discord.Client):
                     continue
                 messages.append(message)
 
-            print(f"🔍 Found {len(messages)} messages in channel (excluding startup message)")
+            log_verbose(f"🔍 Found {len(messages)} messages in channel (excluding startup message)")
 
             # Only start deleting if we have more than max_messages + buffer_threshold
             deletion_threshold = max_messages + buffer_threshold
 
             if len(messages) > deletion_threshold:
                 messages_to_delete = messages[max_messages:]  # Get messages beyond the limit
-                print(f"🧹 Need to delete {len(messages_to_delete)} old messages (threshold: {deletion_threshold})")
+                log_verbose(f"🧹 Need to delete {len(messages_to_delete)} old messages (threshold: {deletion_threshold})")
 
                 deleted_count = 0
                 for message in messages_to_delete:
@@ -1352,13 +1379,13 @@ class DiscordCourtBot(discord.Client):
                     except discord.NotFound:
                         pass  # Message already deleted
                     except discord.Forbidden:
-                        print("⚠️ Bot lacks permission to delete this message")
+                        log_verbose("⚠️ Bot lacks permission to delete this message")
                     except Exception as e:
-                        print(f"⚠️ Failed to delete message: {e}")
+                        log_verbose(f"⚠️ Failed to delete message: {e}")
 
-                print(f"🧹 Successfully deleted {deleted_count} old messages")
+                log_verbose(f"🧹 Successfully deleted {deleted_count} old messages")
             else:
-                print(f"✅ No cleanup needed ({len(messages)}/{deletion_threshold} messages, threshold not reached)")
+                log_verbose(f"✅ No cleanup needed ({len(messages)}/{deletion_threshold} messages, threshold not reached)")
 
         except Exception as e:
             print(f"⚠️ Error during message cleanup: {e}")
@@ -1973,6 +2000,7 @@ class ObjectionBot:
 
                 # Don't show notification for the bot itself
                 if user_id != self.user_id:
+                    # Always show join messages, even in non-verbose mode
                     print(f"👋 User joined: {username}")
 
                     # Send join notification to Discord
@@ -1982,13 +2010,14 @@ class ObjectionBot:
     
     async def handle_user_left(self, user_id):
         """Handle user_left events"""
-        print(f"[DEBUG] Received user_left: {user_id}")
+        log_verbose(f"[DEBUG] Received user_left: {user_id}")
 
         if user_id and user_id in self.user_names:
             username = self.user_names[user_id]
 
             # Don't show notification for the bot itself
             if user_id != self.user_id:
+                # Always show leave messages, even in non-verbose mode
                 print(f"👋 User left: {username}")
 
                 # Send leave notification to Discord
@@ -2003,7 +2032,7 @@ class ObjectionBot:
     
     async def handle_update_user(self, user_id, user_data):
         """Handle user updates (username changes)"""
-        print(f"[DEBUG] Received update_user: user_id={user_id}, data={user_data}")
+        log_verbose(f"[DEBUG] Received update_user: user_id={user_id}, data={user_data}")
 
         if isinstance(user_data, dict) and user_id:
             new_username = user_data.get('username')
@@ -2022,13 +2051,14 @@ class ObjectionBot:
                     new_has_courtdog = "courtdog" in new_username.lower()
                     
                     if not old_has_courtdog and not new_has_courtdog:
+                        # Always show username changes, even in non-verbose mode
                         print(f"✏️ User changed name: {old_username} → {new_username}")
 
                         # Send name change notification to Discord
                         if self.discord_bot:
                             await self.discord_bot.send_username_change_notification(old_username, new_username)
                     else:
-                        print(f"🤖 Court bot name change ignored: {old_username} → {new_username}")
+                        log_verbose(f"🤖 Court bot name change ignored: {old_username} → {new_username}")
     
     async def handle_create_pair(self, data):
         """Handle pairing requests"""
@@ -2897,8 +2927,16 @@ async def terminal_command_listener(objection_bot, discord_bot):
             print("🛑 Terminal closed. Shutting down bots...")
             await shutdown(objection_bot, discord_bot)
 async def main():
+    global VERBOSE_MODE
+    
     # Load configuration
     config = Config()
+    
+    # Set verbose mode from config
+    VERBOSE_MODE = config.get('settings', 'verbose')
+    if VERBOSE_MODE is None:
+        VERBOSE_MODE = True  # Default to verbose if not set
+    
     # Validate configuration
     errors = config.validate()
     if errors:
@@ -2907,21 +2945,27 @@ async def main():
             print(f"   - {error}")
         print("\nPlease fix the configuration file and restart the bot.")
         return
-    print("📋 Configuration loaded successfully!")
-    print(f"🏠 Room: {config.get('objection', 'room_id')}")
-    print(f"🤖 Username: {config.get('objection', 'bot_username')}")
-    print(f"🎭 Mode: {config.get('settings', 'mode')}")
+    
+    log_verbose("📋 Configuration loaded successfully!")
+    log_verbose(f"🏠 Room: {config.get('objection', 'room_id')}")
+    log_verbose(f"🤖 Username: {config.get('objection', 'bot_username')}")
+    log_verbose(f"🎭 Mode: {config.get('settings', 'mode')}")
+    
+    if not VERBOSE_MODE:
+        print("💬 Simple logging mode enabled (set VERBOSE=true for detailed logs)")
+    else:
+        print("📝 Verbose logging mode enabled")
     # Create bots
     objection_bot = ObjectionBot(config)
     discord_bot = DiscordCourtBot(objection_bot, config)
     # Link them together
     objection_bot.set_discord_bot(discord_bot)
-    print("🔌 Attempting to connect to objection.lol...")
+    log_verbose("🔌 Attempting to connect to objection.lol...")
     objection_success = await objection_bot.connect_to_room()
     if objection_success:
-        print("✅ Objection.lol connection successful!")
+        log_verbose("✅ Objection.lol connection successful!")
         # Start Discord bot in background
-        print("🔌 Starting Discord bot...")
+        log_verbose("🔌 Starting Discord bot...")
         discord_task = asyncio.create_task(discord_bot.start(config.get('discord', 'token')))
         # Start terminal command listener in background
         terminal_task = asyncio.create_task(terminal_command_listener(objection_bot, discord_bot))
