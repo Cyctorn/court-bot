@@ -19,5 +19,6 @@ services:
       - MAX_MESSAGES=${MAX_MESSAGES:-}
       - DELETE_COMMANDS=${DELETE_COMMANDS:-}
       - SHOW_JOIN_LEAVE=${SHOW_JOIN_LEAVE:-}
+      - VERBOSE=${VERBOSE:-}
     stdin_open: true
     tty: true
