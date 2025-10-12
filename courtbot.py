@@ -190,7 +190,7 @@ class Config:
                 "max_messages": 50,
                 "delete_commands": True,
                 "show_join_leave": True,
-                "verbose": True
+                "verbose": False
             }
         }
         
