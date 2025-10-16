@@ -19,6 +19,8 @@ import re
 NICKNAME_FILE = '/app/data/nicknames.json'
 # Color storage file
 COLOR_FILE = '/app/data/colors.json'
+# Character/Pose storage file
+CHARACTER_FILE = '/app/data/characters.json'
 
 # Predefined color options for easy access
 PRESET_COLORS = {
@@ -86,6 +88,23 @@ def save_colors(colors):
             json.dump(colors, f, indent=2)
     except Exception as e:
         print(f"❌ Error saving colors: {e}")
+
+def load_characters():
+    if os.path.exists(CHARACTER_FILE):
+        try:
+            with open(CHARACTER_FILE, 'r') as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"❌ Error loading characters: {e}")
+            return {}
+    return {}
+
+def save_characters(characters):
+    try:
+        with open(CHARACTER_FILE, 'w') as f:
+            json.dump(characters, f, indent=2)
+    except Exception as e:
+        print(f"❌ Error saving characters: {e}")
 
 class Config:
     def __init__(self, config_file='/app/data/config.json'):
@@ -384,6 +403,8 @@ class DiscordCourtBot(discord.Client):
         self.nicknames = load_nicknames()
         # Color mapping: discord user id (str) -> color code (str)
         self.colors = load_colors()
+        # Character/Pose mapping: discord user id (str) -> {character_id: int, pose_id: int}
+        self.characters = load_characters()
         # Create command tree
         self.tree = app_commands.CommandTree(self)
     async def setup_hook(self):
@@ -486,7 +507,7 @@ class DiscordCourtBot(discord.Client):
                     )
                     startup_embed.add_field(
                         name="Available Commands",
-                        value="/status - Check bridge status\n/reconnect - Reconnect to courtroom\n/nickname - Set your bridge nickname\n/color - Set your bridge message color\n/shaba\n/help - Show this help",
+                        value="/status - Check bridge status\n/reconnect - Reconnect to courtroom\n/nickname - Set your bridge nickname\n/color - Set your bridge message color\n/character - Set your character/pose\n/shaba\n/help - Show this help",
                         inline=False
                     )
                     startup_embed.add_field(
@@ -535,7 +556,7 @@ class DiscordCourtBot(discord.Client):
             )
             embed.add_field(
                 name="Commands",
-                value="/status - Check bridge status\n/reconnect - Reconnect to courtroom\n/nickname - Set/reset your bridge nickname\n/color - Set your message color\n/shaba\n/help - Show this help",
+                value="/status - Check bridge status\n/reconnect - Reconnect to courtroom\n/nickname - Set/reset your bridge nickname\n/color - Set your message color\n/character - Set your character/pose\n/shaba\n/help - Show this help",
                 inline=False
             )
             embed.add_field(
@@ -621,6 +642,49 @@ class DiscordCourtBot(discord.Client):
             self.colors[user_id] = clean_color.lower()
             save_colors(self.colors)
             await interaction.response.send_message(f"✅ Your message color is now set to: **#{clean_color.upper()}**\nYour messages will appear in color in the courtroom. Use `/color reset` to remove it.", ephemeral=True)
+        
+        @self.tree.command(name="character", description="Set your character and pose for the courtroom ('reset' to remove)")
+        @app_commands.describe(
+            character_id="Character ID (e.g., 408757) or 'reset' to remove",
+            pose_id="Pose ID (e.g., 4998989) - required if setting character"
+        )
+        async def character_command(interaction: discord.Interaction, character_id: str, pose_id: str = None):
+            user_id = str(interaction.user.id)
+
+            # Handle reset/removal
+            if character_id.lower() in ['reset', 'remove', 'clear', 'delete']:
+                if user_id in self.characters:
+                    del self.characters[user_id]
+                    save_characters(self.characters)
+                    await interaction.response.send_message("✅ Your character/pose has been reset. The bot's default character will be used.", ephemeral=True)
+                else:
+                    await interaction.response.send_message("ℹ️ You don't have a custom character set.", ephemeral=True)
+                return
+
+            # Validate that both character_id and pose_id are provided
+            if not pose_id:
+                await interaction.response.send_message("❌ Both character ID and pose ID are required. Example: `/character 408757 4998989`", ephemeral=True)
+                return
+
+            # Validate that both are numeric
+            try:
+                char_id_int = int(character_id)
+                pose_id_int = int(pose_id)
+            except ValueError:
+                await interaction.response.send_message("❌ Character ID and Pose ID must be numbers. Example: `/character 408757 4998989`", ephemeral=True)
+                return
+
+            # Store the character and pose
+            self.characters[user_id] = {
+                'character_id': char_id_int,
+                'pose_id': pose_id_int
+            }
+            save_characters(self.characters)
+            await interaction.response.send_message(
+                f"✅ Your character/pose is now set to:\n**Character ID:** {char_id_int}\n**Pose ID:** {pose_id_int}\n\nYour messages will appear with this character in the courtroom. Use `/character reset` to remove it.",
+                ephemeral=True
+            )
+
         @self.tree.command(name="shaba")
         async def shaba_command(interaction: discord.Interaction):
             """Shaba command"""
@@ -1143,7 +1207,7 @@ class DiscordCourtBot(discord.Client):
             )
             embed.add_field(
                 name="Available Commands",
-                value="/status - Check bridge status\n/reconnect - Reconnect to courtroom\n/nickname - Set your bridge nickname\n/color - Set your message color\n/shaba\n/help - Show this help",
+                value="/status - Check bridge status\n/reconnect - Reconnect to courtroom\n/nickname - Set your bridge nickname\n/color - Set your message color\n/character - Set your character/pose\n/shaba\n/help - Show this help",
                 inline=False
             )
             embed.add_field(
@@ -1253,7 +1317,16 @@ class DiscordCourtBot(discord.Client):
                 return
                 
             actual_username = target_username
-            message_sent = await self.objection_bot.send_message(send_content)
+            
+            # Get user's custom character/pose if set
+            user_character = self.characters.get(user_id)
+            if user_character:
+                char_id = user_character['character_id']
+                p_id = user_character['pose_id']
+                message_sent = await self.objection_bot.send_message(send_content, character_id=char_id, pose_id=p_id)
+            else:
+                message_sent = await self.objection_bot.send_message(send_content)
+            
             if message_sent:
                 # Log the message in simple format for non-verbose mode
                 log_message("Discord", display_name, message.content if message.content else "[media]")
@@ -2475,8 +2548,8 @@ class ObjectionBot:
         self.connected = False
         print("✅ Graceful disconnect completed")
     
-    async def send_message(self, text):
-        """Send a message to the chatroom"""
+    async def send_message(self, text, character_id=None, pose_id=None):
+        """Send a message to the chatroom with optional character/pose override"""
         if not self.connected:
             print("❌ Not connected - cannot send message")
             # Trigger auto-reconnect if not already in progress
@@ -2493,11 +2566,12 @@ class ObjectionBot:
                 await self.start_auto_reconnect()
             return False
             
-        character_id = self.config.get('settings', 'character_id')
-        pose_id = self.config.get('settings', 'pose_id')
+        # Use provided character/pose or fall back to config defaults
+        char_id = character_id if character_id is not None else self.config.get('settings', 'character_id')
+        p_id = pose_id if pose_id is not None else self.config.get('settings', 'pose_id')
         message_data = {
-            "characterId": character_id,
-            "poseId": pose_id,
+            "characterId": char_id,
+            "poseId": p_id,
             "text": text
         }
         
