@@ -195,3 +195,4 @@ config.json
 /test
 courtroom_bot.py
 2.env
+.github/copilot-instructions.md
