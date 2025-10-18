@@ -822,10 +822,6 @@ class DiscordCourtBot(discord.Client):
                 await interaction.followup.send("❌ Not connected to objection.lol", ephemeral=False)
                 return
 
-            if not self.objection_bot.is_admin:
-                await interaction.followup.send("❌ Need admin status in the courtroom to change the title", ephemeral=False)
-                return
-
             # Validate title length
             if not title or len(title) > 150:
                 await interaction.followup.send("❌ Title must be between 1 and 150 characters", ephemeral=False)
@@ -858,10 +854,6 @@ class DiscordCourtBot(discord.Client):
 
             if not self.objection_bot.connected:
                 await interaction.followup.send("❌ Not connected to objection.lol", ephemeral=True)
-                return
-
-            if not self.objection_bot.is_admin:
-                await interaction.followup.send("❌ Need admin status in the courtroom to change slow mode", ephemeral=True)
                 return
 
             # Validate seconds range
@@ -950,10 +942,6 @@ class DiscordCourtBot(discord.Client):
                 await interaction.followup.send("❌ Not connected to objection.lol", ephemeral=True)
                 return
 
-            if not self.objection_bot.is_admin:
-                await interaction.followup.send("❌ Need admin status in the courtroom to change password", ephemeral=True)
-                return
-
             # Determine action based on password input
             if password.strip() == "":
                 action_description = "**Remove password** (make room public)"
@@ -1039,10 +1027,6 @@ class DiscordCourtBot(discord.Client):
                 await interaction.followup.send("❌ Not connected to objection.lol", ephemeral=False)
                 return
 
-            if not self.objection_bot.is_admin:
-                await interaction.followup.send("❌ Need admin status in the courtroom to change the textbox", ephemeral=False)
-                return
-
             # Check if it's a preset textbox name
             preset_textbox = PRESET_TEXTBOXES.get(style.lower())
             if preset_textbox:
@@ -1091,10 +1075,6 @@ class DiscordCourtBot(discord.Client):
                 await interaction.followup.send("❌ Not connected to objection.lol", ephemeral=False)
                 return
 
-            if not self.objection_bot.is_admin:
-                await interaction.followup.send("❌ Need admin status in the courtroom to change the aspect ratio", ephemeral=False)
-                return
-
             try:
                 success = await self.objection_bot.update_room_aspect_ratio(ratio.value)
                 if success:
@@ -1123,10 +1103,6 @@ class DiscordCourtBot(discord.Client):
             
             if not self.objection_bot.connected:
                 await interaction.followup.send("❌ Not connected to objection.lol", ephemeral=False)
-                return
-
-            if not self.objection_bot.is_admin:
-                await interaction.followup.send("❌ Need admin status in the courtroom to change spectating settings", ephemeral=False)
                 return
             
             try:
@@ -1528,6 +1504,8 @@ class DiscordCourtBot(discord.Client):
                 if avatar_data:
                     avatar_url = avatar_data['url']
                     log_verbose(f"🎭 Fetched avatar for {avatar_data['character_name']} - {avatar_data['pose_name']}")
+                else:
+                    log_verbose(f"⚠️ Could not fetch avatar for character {character_id}, pose {pose_id} - will send as plain text")
             
             unix_timestamp = int(time.time())
             
@@ -1539,9 +1517,12 @@ class DiscordCourtBot(discord.Client):
             # Determine if we're showing an avatar embed for this new message
             showing_new_avatar = self.show_avatars and avatar_url and (user_changed or pose_changed)
             
+            # ALWAYS edit previous avatar embeds when user changes OR pose changes (even if avatar fetch failed)
+            # This ensures embeds are converted even when the new message doesn't have an avatar
+            should_edit_previous = self.show_avatars and (user_changed or pose_changed)
+            
             # Edit ALL previous avatar embeds to plain text BEFORE sending new message
-            # Only do this if we're about to show a new avatar
-            if showing_new_avatar and self.bridge_channel:
+            if should_edit_previous and self.bridge_channel:
                 try:
                     log_verbose(f"🔍 Scanning for previous avatar embeds to convert...")
                     converted_count = 0
@@ -1559,15 +1540,20 @@ class DiscordCourtBot(discord.Client):
                         # Check if this message has an avatar embed
                         if message.embeds and len(message.embeds) > 0:
                             embed = message.embeds[0]
-                            # Check if it's an avatar embed (has title, description, and image)
-                            if embed.title and embed.description and embed.image:
+                            # Check if it's an avatar embed (has title and image, description may be empty)
+                            if embed.title and embed.image:
                                 # Extract the timestamp from the message
                                 msg_timestamp = int(message.created_at.timestamp())
                                 embed_username = embed.title
-                                embed_message = embed.description
+                                # Handle empty descriptions - just use empty string or the actual text
+                                embed_message = embed.description if embed.description else ""
                                 
                                 # Format as plain message without avatar
-                                formatted_plain = f"**{embed_username}**:\n{embed_message}\n-# <t:{msg_timestamp}:T>"
+                                # If message is empty, just show username and timestamp
+                                if embed_message:
+                                    formatted_plain = f"**{embed_username}**:\n{embed_message}\n-# <t:{msg_timestamp}:T>"
+                                else:
+                                    formatted_plain = f"**{embed_username}**:\n-# <t:{msg_timestamp}:T>"
                                 await message.edit(content=formatted_plain, embeds=[])
                                 converted_count += 1
                                 log_verbose(f"✏️ Converted avatar embed from {embed_username} to plain text")
@@ -2817,11 +2803,7 @@ class ObjectionBot:
         await self.graceful_disconnect()
     
     async def update_room_title(self, title):
-        """Update the room title (admin only)"""
-        if not self.is_admin:
-            print("[TITLE] Cannot update title - bot is not admin")
-            return False
-        
+        """Update the room title"""
         if not title or len(title) > 150:
             print("[TITLE] Title must be 1-150 characters")
             return False
@@ -2838,11 +2820,7 @@ class ObjectionBot:
             return False
 
     async def update_room_slowmode(self, seconds):
-        """Update the room slow mode (admin only)"""
-        if not self.is_admin:
-            print("[SLOWMODE] Cannot update slow mode - bot is not admin")
-            return False
-        
+        """Update the room slow mode"""
         if seconds < 0 or seconds > 60:
             print("[SLOWMODE] Slow mode seconds must be 0-60")
             return False
@@ -2862,11 +2840,7 @@ class ObjectionBot:
             return False
 
     async def update_room_password(self, password):
-        """Update the room password (admin only)"""
-        if not self.is_admin:
-            print("[PASSWORD] Cannot update password - bot is not admin")
-            return False
-        
+        """Update the room password"""
         # Send update to server using update_room_admin
         try:
             update_data = {"password": password}
@@ -2879,11 +2853,7 @@ class ObjectionBot:
             return False
 
     async def update_room_textbox(self, textbox_id):
-        """Update the room textbox appearance (admin only)"""
-        if not self.is_admin:
-            print("[TEXTBOX] Cannot update textbox - bot is not admin")
-            return False
-        
+        """Update the room textbox appearance"""
         if not textbox_id:
             print("[TEXTBOX] Textbox ID cannot be empty")
             return False
@@ -2900,11 +2870,7 @@ class ObjectionBot:
             return False
 
     async def update_room_aspect_ratio(self, aspect_ratio):
-        """Update the room aspect ratio (admin only)"""
-        if not self.is_admin:
-            print("[ASPECT] Cannot update aspect ratio - bot is not admin")
-            return False
-        
+        """Update the room aspect ratio"""
         # Validate aspect ratio
         valid_ratios = ["3:2", "4:3", "16:9", "16:10"]
         if aspect_ratio not in valid_ratios:
@@ -2923,11 +2889,7 @@ class ObjectionBot:
             return False
 
     async def update_room_spectating(self, enable_spectating):
-        """Enable or disable spectating in the room (admin only)"""
-        if not self.is_admin:
-            print("[SPECTATING] Cannot update spectating - bot is not admin")
-            return False
-        
+        """Enable or disable spectating in the room"""
         # Send update to server
         try:
             update_data = {"enableSpectating": enable_spectating}
