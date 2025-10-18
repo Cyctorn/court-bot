@@ -13,6 +13,7 @@ import aiohttp
 import re
 import signal
 import time
+from datetime import datetime, timezone
 import re
 
 # Nickname storage file
@@ -357,6 +358,51 @@ class DiscordCourtBot(discord.Client):
             print(f"❌ Error fetching evidence data for ID {evidence_id}: {e}")
             return None
 
+    async def fetch_character_avatar(self, character_id, pose_id):
+        """Fetch character avatar (idle image) from objection.lol's API"""
+        try:
+            # Use the character API endpoint
+            api_url = f"https://objection.lol/api/assets/character/{character_id}"
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.get(api_url) as response:
+                    if response.status == 200:
+                        character_data = await response.json()
+                        character_name = character_data.get('name', 'Unknown')
+                        poses = character_data.get('poses', [])
+                        
+                        # Find the matching pose
+                        for pose in poses:
+                            if pose.get('id') == pose_id:
+                                idle_image_url = pose.get('idleImageUrl')
+                                pose_name = pose.get('name', 'Unknown Pose')
+                                
+                                if idle_image_url:
+                                    log_verbose(f"🎭 Found avatar for character {character_id} ({character_name}), pose {pose_id} ({pose_name}): {idle_image_url}")
+                                    return {
+                                        'url': idle_image_url,
+                                        'character_name': character_name,
+                                        'pose_name': pose_name,
+                                        'character_id': character_id,
+                                        'pose_id': pose_id
+                                    }
+                                else:
+                                    log_verbose(f"❌ No idle image URL found for character {character_id}, pose {pose_id}")
+                                    return None
+                        
+                        # Pose not found
+                        log_verbose(f"❌ Pose {pose_id} not found for character {character_id}")
+                        return None
+                    elif response.status == 404:
+                        log_verbose(f"❌ Character ID {character_id} not found")
+                        return None
+                    else:
+                        log_verbose(f"❌ Failed to fetch character data for ID {character_id} (status: {response.status})")
+                        return None
+        except Exception as e:
+            log_verbose(f"❌ Error fetching character avatar for ID {character_id}: {e}")
+            return None
+
     def strip_color_codes(self, text):
         """Remove objection.lol color codes from text"""
         import re
@@ -405,6 +451,12 @@ class DiscordCourtBot(discord.Client):
         self.colors = load_colors()
         # Character/Pose mapping: discord user id (str) -> {character_id: int, pose_id: int}
         self.characters = load_characters()
+        # Track the last message sent to Discord for avatar management
+        self.last_discord_message = None
+        self.last_message_username = None
+        self.last_message_pose_id = None  # Track pose to detect pose changes
+        # Avatar display toggle (default enabled)
+        self.show_avatars = True
         # Create command tree
         self.tree = app_commands.CommandTree(self)
     async def setup_hook(self):
@@ -507,7 +559,7 @@ class DiscordCourtBot(discord.Client):
                     )
                     startup_embed.add_field(
                         name="Available Commands",
-                        value="/status - Check bridge status\n/reconnect - Reconnect to courtroom\n/nickname - Set your bridge nickname\n/color - Set your bridge message color\n/character - Set your character/pose\n/shaba\n/help - Show this help",
+                        value="/status - Check bridge status\n/reconnect - Reconnect to courtroom\n/nickname - Set your bridge nickname\n/color - Set your bridge message color\n/character - Set your character/pose\n/avatars - Toggle avatar display\n/shaba\n/help - Show this help",
                         inline=False
                     )
                     startup_embed.add_field(
@@ -556,7 +608,7 @@ class DiscordCourtBot(discord.Client):
             )
             embed.add_field(
                 name="Commands",
-                value="/status - Check bridge status\n/reconnect - Reconnect to courtroom\n/nickname - Set/reset your bridge nickname\n/color - Set your message color\n/character - Set your character/pose\n/shaba\n/help - Show this help",
+                value="/status - Check bridge status\n/reconnect - Reconnect to courtroom\n/nickname - Set/reset your bridge nickname\n/color - Set your message color\n/character - Set your character/pose\n/avatars - Toggle avatar display\n/shaba\n/help - Show this help",
                 inline=False
             )
             embed.add_field(
@@ -684,6 +736,58 @@ class DiscordCourtBot(discord.Client):
                 f"✅ Your character/pose is now set to:\n**Character ID:** {char_id_int}\n**Pose ID:** {pose_id_int}\n\nYour messages will appear with this character in the courtroom. Use `/character reset` to remove it.",
                 ephemeral=True
             )
+
+        @self.tree.command(name="avatars", description="Toggle character avatar display in Discord")
+        @app_commands.describe(enabled="Enable or disable avatar display")
+        @app_commands.choices(enabled=[
+            app_commands.Choice(name="Enable", value="enable"),
+            app_commands.Choice(name="Disable", value="disable")
+        ])
+        async def avatars_command(interaction: discord.Interaction, enabled: app_commands.Choice[str]):
+            """Toggle avatar display"""
+            if enabled.value == "enable":
+                self.show_avatars = True
+                status_emoji = "✅"
+                status_text = "enabled"
+                description = "Character avatars will now be displayed in Discord messages."
+            else:
+                self.show_avatars = False
+                status_emoji = "❌"
+                status_text = "disabled"
+                description = "Character avatars will no longer be displayed. All messages will be plain text."
+                
+                # Convert any existing avatar embeds to plain text
+                try:
+                    log_verbose(f"🔍 Converting existing avatar embeds to plain text...")
+                    converted_count = 0
+                    
+                    async for message in self.bridge_channel.history(limit=50):
+                        if message == self.startup_message or message.author != self.user:
+                            continue
+                        
+                        if message.embeds and len(message.embeds) > 0:
+                            embed = message.embeds[0]
+                            if embed.title and embed.description and embed.image:
+                                msg_timestamp = int(message.created_at.timestamp())
+                                embed_username = embed.title
+                                embed_message = embed.description
+                                
+                                formatted_plain = f"**{embed_username}**:\n{embed_message}\n-# <t:{msg_timestamp}:T>"
+                                await message.edit(content=formatted_plain, embeds=[])
+                                converted_count += 1
+                    
+                    if converted_count > 0:
+                        log_verbose(f"✅ Converted {converted_count} existing avatar embed(s) to plain text")
+                except Exception as e:
+                    log_verbose(f"⚠️ Error converting existing embeds: {e}")
+            
+            embed = discord.Embed(
+                title=f"{status_emoji} Avatars {status_text.capitalize()}",
+                description=description,
+                color=0x00ff00 if enabled.value == "enable" else 0xff9900
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=False)
+            print(f"[AVATARS] Avatar display {status_text} by {interaction.user.display_name}")
 
         @self.tree.command(name="shaba")
         async def shaba_command(interaction: discord.Interaction):
@@ -1207,7 +1311,7 @@ class DiscordCourtBot(discord.Client):
             )
             embed.add_field(
                 name="Available Commands",
-                value="/status - Check bridge status\n/reconnect - Reconnect to courtroom\n/nickname - Set your bridge nickname\n/color - Set your message color\n/character - Set your character/pose\n/shaba\n/help - Show this help",
+                value="/status - Check bridge status\n/reconnect - Reconnect to courtroom\n/nickname - Set your bridge nickname\n/color - Set your message color\n/character - Set your character/pose\n/avatars - Toggle avatar display\n/shaba\n/help - Show this help",
                 inline=False
             )
             embed.add_field(
@@ -1334,7 +1438,7 @@ class DiscordCourtBot(discord.Client):
             else:
                 log_verbose(f"❌ Failed to send message to objection.lol")
             await self.cleanup_messages()
-    async def send_to_discord(self, username, message):
+    async def send_to_discord(self, username, message, character_id=None, pose_id=None):
         """Send a message from objection.lol to Discord"""
         if self.bridge_channel:
             # Strip color codes before sending to Discord
@@ -1417,9 +1521,87 @@ class DiscordCourtBot(discord.Client):
                         await self.bridge_channel.send(embed=evidence_embed)
                         log_verbose(f"📄 Posted evidence {evidence_id}: '{evidence_data['name']}' -> {evidence_data['url']}")
             
+            # Fetch character avatar if character_id and pose_id are provided
+            avatar_url = None
+            if character_id is not None and pose_id is not None:
+                avatar_data = await self.fetch_character_avatar(character_id, pose_id)
+                if avatar_data:
+                    avatar_url = avatar_data['url']
+                    log_verbose(f"🎭 Fetched avatar for {avatar_data['character_name']} - {avatar_data['pose_name']}")
+            
             unix_timestamp = int(time.time())
-            formatted_message = f"**{username}**:\n{cleaned_message}\n-# <t:{unix_timestamp}:T>"
-            sent_message = await self.bridge_channel.send(formatted_message)
+            
+            # Show avatar embed if: avatars enabled AND avatar exists AND (different user OR different pose)
+            # This allows same user to show new avatar when they change their pose
+            pose_changed = pose_id is not None and self.last_message_pose_id != pose_id
+            user_changed = self.last_message_username != username
+            
+            # Determine if we're showing an avatar embed for this new message
+            showing_new_avatar = self.show_avatars and avatar_url and (user_changed or pose_changed)
+            
+            # Edit ALL previous avatar embeds to plain text BEFORE sending new message
+            # Only do this if we're about to show a new avatar
+            if showing_new_avatar and self.bridge_channel:
+                try:
+                    log_verbose(f"🔍 Scanning for previous avatar embeds to convert...")
+                    converted_count = 0
+                    
+                    # Look through recent messages (limit to avoid excessive API calls)
+                    async for message in self.bridge_channel.history(limit=50):
+                        # Skip the startup message
+                        if message == self.startup_message:
+                            continue
+                        
+                        # Skip messages from other bots or non-bot messages
+                        if message.author != self.user:
+                            continue
+                        
+                        # Check if this message has an avatar embed
+                        if message.embeds and len(message.embeds) > 0:
+                            embed = message.embeds[0]
+                            # Check if it's an avatar embed (has title, description, and image)
+                            if embed.title and embed.description and embed.image:
+                                # Extract the timestamp from the message
+                                msg_timestamp = int(message.created_at.timestamp())
+                                embed_username = embed.title
+                                embed_message = embed.description
+                                
+                                # Format as plain message without avatar
+                                formatted_plain = f"**{embed_username}**:\n{embed_message}\n-# <t:{msg_timestamp}:T>"
+                                await message.edit(content=formatted_plain, embeds=[])
+                                converted_count += 1
+                                log_verbose(f"✏️ Converted avatar embed from {embed_username} to plain text")
+                    
+                    if converted_count > 0:
+                        log_verbose(f"✅ Converted {converted_count} avatar embed(s) to plain text")
+                    else:
+                        log_verbose(f"ℹ️ No previous avatar embeds found to convert")
+                        
+                except Exception as e:
+                    log_verbose(f"⚠️ Failed to edit previous avatar embeds: {e}")
+            
+            # Now send the new message
+            if showing_new_avatar:
+                # Create embed with avatar at top, then username and message below
+                avatar_embed = discord.Embed(
+                    title=username,
+                    description=cleaned_message,
+                    color=0x1e1e1e,
+                    timestamp=datetime.fromtimestamp(unix_timestamp, tz=timezone.utc)
+                )
+                avatar_embed.set_image(url=avatar_url)
+                sent_message = await self.bridge_channel.send(embed=avatar_embed)
+                log_verbose(f"🖼️ Sent message as embed with avatar (user_changed={user_changed}, pose_changed={pose_changed})")
+            else:
+                # Send as plain text without avatar (no avatar available OR same user+pose as last message)
+                formatted_message = f"**{username}**:\n{cleaned_message}\n-# <t:{unix_timestamp}:T>"
+                sent_message = await self.bridge_channel.send(formatted_message)
+            
+            # Update tracking for next message
+            self.last_discord_message = sent_message
+            self.last_message_username = username
+            self.last_message_pose_id = pose_id
+            
             # Log the message in simple format for non-verbose mode
             log_message("Chatroom", username, cleaned_message)
             log_verbose(f"🔄 Objection → Discord: {username}: {cleaned_message}")
@@ -2045,7 +2227,10 @@ class ObjectionBot:
             log_verbose(f"📨 Received: {username}: {text}")
             # Send to Discord if connected
             if self.discord_bot:
-                await self.discord_bot.send_to_discord(username, text)
+                # Extract character and pose IDs from the message data
+                character_id = message.get('characterId')
+                pose_id = message.get('poseId')
+                await self.discord_bot.send_to_discord(username, text, character_id, pose_id)
     
     async def handle_room_update(self, data):
         """Handle room updates to get user information"""
