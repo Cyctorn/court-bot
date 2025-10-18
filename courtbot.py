@@ -1389,35 +1389,6 @@ class DiscordCourtBot(discord.Client):
                         await self.bridge_channel.send(embed=evidence_embed)
                         log_verbose(f"📄 Posted evidence {evidence_id}: '{evidence_data['name']}' -> {evidence_data['url']}")
             
-            # Edit previous message to convert embed to plain text if it's from a different user
-            if self.last_discord_message and self.last_message_username != username:
-                try:
-                    # Check if the previous message has embeds (meaning it has an avatar)
-                    if self.last_discord_message.embeds:
-                        # Extract the timestamp from the message
-                        unix_timestamp_old = int(self.last_discord_message.created_at.timestamp())
-                        # Get the username and message from the embed
-                        old_embed = self.last_discord_message.embeds[0]
-                        old_username = self.last_message_username
-                        old_message = old_embed.description if old_embed.description else ""
-                        
-                        # Format as plain message without avatar
-                        formatted_old = f"**{old_username}**:\n{old_message}\n-# <t:{unix_timestamp_old}:T>"
-                        
-                        # Edit the message - need to await the result
-                        edited_msg = await self.last_discord_message.edit(content=formatted_old, embeds=[])
-                        log_verbose(f"✏️ Converted previous message from {self.last_message_username} to plain text")
-                        
-                        # Update reference to the edited message
-                        self.last_discord_message = edited_msg
-                except discord.errors.HTTPException as e:
-                    print(f"⚠️ HTTP error editing previous message: {e.status} - {e.text}")
-                except discord.errors.Forbidden as e:
-                    print(f"⚠️ Permission denied editing previous message: {e}")
-                except Exception as e:
-                    print(f"⚠️ Failed to edit previous message: {type(e).__name__}: {e}")
-            
-            
             # Fetch character avatar if character_id and pose_id are provided
             avatar_url = None
             if character_id is not None and pose_id is not None:
@@ -1433,7 +1404,31 @@ class DiscordCourtBot(discord.Client):
             pose_changed = pose_id is not None and self.last_message_pose_id != pose_id
             user_changed = self.last_message_username != username
             
-            if avatar_url and (user_changed or pose_changed):
+            # Determine if we're showing an avatar embed for this new message
+            showing_new_avatar = avatar_url and (user_changed or pose_changed)
+            
+            # Edit previous message to remove avatar BEFORE sending new message
+            # Only edit if: there WAS a previous message with embed AND (we're showing new avatar OR different user)
+            if self.last_discord_message and (showing_new_avatar or user_changed):
+                try:
+                    # Check if the previous message has embeds (meaning it has an avatar)
+                    if self.last_discord_message.embeds:
+                        # Extract the timestamp from the message
+                        unix_timestamp_old = int(self.last_discord_message.created_at.timestamp())
+                        # Get the username and message from the embed
+                        old_embed = self.last_discord_message.embeds[0]
+                        old_username = old_embed.title if old_embed.title else self.last_message_username
+                        old_message = old_embed.description if old_embed.description else ""
+                        
+                        # Format as plain message without avatar
+                        formatted_old = f"**{old_username}**:\n{old_message}\n-# <t:{unix_timestamp_old}:T>"
+                        await self.last_discord_message.edit(content=formatted_old, embeds=[])
+                        log_verbose(f"✏️ Converted previous message from {old_username} to plain text")
+                except Exception as e:
+                    log_verbose(f"⚠️ Failed to edit previous message: {e}")
+            
+            # Now send the new message
+            if showing_new_avatar:
                 # Create embed with avatar at top, then username and message below
                 avatar_embed = discord.Embed(
                     title=username,
