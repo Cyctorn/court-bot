@@ -378,6 +378,10 @@ class DiscordCourtBot(discord.Client):
                                 pose_name = pose.get('name', 'Unknown Pose')
                                 
                                 if idle_image_url:
+                                    # Convert relative URLs to absolute URLs
+                                    if idle_image_url.startswith('/'):
+                                        idle_image_url = f"https://objection.lol{idle_image_url}"
+                                    
                                     log_verbose(f"🎭 Found avatar for character {character_id} ({character_name}), pose {pose_id} ({pose_name}): {idle_image_url}")
                                     return {
                                         'url': idle_image_url,
