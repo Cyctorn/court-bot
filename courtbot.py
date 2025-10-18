@@ -1402,7 +1402,7 @@ class DiscordCourtBot(discord.Client):
                         
                         # Format as plain message without avatar
                         formatted_old = f"**{old_username}**:\n{old_message}\n-# <t:{unix_timestamp_old}:T>"
-                        await self.last_discord_message.edit(content=formatted_old, embed=None)
+                        await self.last_discord_message.edit(content=formatted_old, embeds=[])
                         log_verbose(f"✏️ Converted previous message from {self.last_message_username} to plain text")
                 except Exception as e:
                     log_verbose(f"⚠️ Failed to edit previous message: {e}")
@@ -1417,20 +1417,21 @@ class DiscordCourtBot(discord.Client):
             
             unix_timestamp = int(time.time())
             
-            # Send message as embed if avatar available, otherwise plain text
-            if avatar_url:
-                # Create full embed with avatar, username, message, and timestamp
+            # Only show avatar embed if it's from a different user than the last message
+            # Same user consecutive messages should be plain text
+            if avatar_url and self.last_message_username != username:
+                # Create embed with avatar at top, then username and message below
                 avatar_embed = discord.Embed(
+                    title=username,
                     description=cleaned_message,
                     color=0x1e1e1e,
                     timestamp=datetime.fromtimestamp(unix_timestamp, tz=timezone.utc)
                 )
-                avatar_embed.set_author(name=username)
                 avatar_embed.set_image(url=avatar_url)
                 sent_message = await self.bridge_channel.send(embed=avatar_embed)
                 log_verbose(f"🖼️ Sent message as embed with avatar")
             else:
-                # Send as plain text without avatar
+                # Send as plain text without avatar (no avatar available OR same user as last message)
                 formatted_message = f"**{username}**:\n{cleaned_message}\n-# <t:{unix_timestamp}:T>"
                 sent_message = await self.bridge_channel.send(formatted_message)
             
