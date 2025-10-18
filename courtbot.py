@@ -13,6 +13,7 @@ import aiohttp
 import re
 import signal
 import time
+from datetime import datetime, timezone
 import re
 
 # Nickname storage file
@@ -1387,16 +1388,22 @@ class DiscordCourtBot(discord.Client):
                         await self.bridge_channel.send(embed=evidence_embed)
                         log_verbose(f"📄 Posted evidence {evidence_id}: '{evidence_data['name']}' -> {evidence_data['url']}")
             
-            # Edit previous message to remove avatar if it's from a different user
+            # Edit previous message to convert embed to plain text if it's from a different user
             if self.last_discord_message and self.last_message_username != username:
                 try:
-                    # Remove avatar by editing to plain text without embed
-                    unix_timestamp_old = int(self.last_discord_message.created_at.timestamp())
-                    old_content = self.last_discord_message.content.split('\n')[0]  # Get username line
-                    old_message_text = '\n'.join(self.last_discord_message.content.split('\n')[1:-1])  # Get message text without timestamp
-                    formatted_old = f"{old_content}\n{old_message_text}\n-# <t:{unix_timestamp_old}:T>"
-                    await self.last_discord_message.edit(content=formatted_old, embed=None)
-                    log_verbose(f"✏️ Edited previous message from {self.last_message_username} to remove avatar")
+                    # Check if the previous message has embeds (meaning it has an avatar)
+                    if self.last_discord_message.embeds:
+                        # Extract the timestamp from the message
+                        unix_timestamp_old = int(self.last_discord_message.created_at.timestamp())
+                        # Get the username and message from the embed
+                        old_embed = self.last_discord_message.embeds[0]
+                        old_username = self.last_message_username
+                        old_message = old_embed.description if old_embed.description else ""
+                        
+                        # Format as plain message without avatar
+                        formatted_old = f"**{old_username}**:\n{old_message}\n-# <t:{unix_timestamp_old}:T>"
+                        await self.last_discord_message.edit(content=formatted_old, embed=None)
+                        log_verbose(f"✏️ Converted previous message from {self.last_message_username} to plain text")
                 except Exception as e:
                     log_verbose(f"⚠️ Failed to edit previous message: {e}")
             
@@ -1410,19 +1417,20 @@ class DiscordCourtBot(discord.Client):
             
             unix_timestamp = int(time.time())
             
-            # Send message with avatar if available
+            # Send message as embed if avatar available, otherwise plain text
             if avatar_url:
-                # Create embed with avatar between username and message
-                # Username goes in the embed description, image in the middle, message as content
+                # Create full embed with avatar, username, message, and timestamp
                 avatar_embed = discord.Embed(
-                    description=f"**{username}**:",
-                    color=0x1e1e1e
+                    description=cleaned_message,
+                    color=0x1e1e1e,
+                    timestamp=datetime.fromtimestamp(unix_timestamp, tz=timezone.utc)
                 )
+                avatar_embed.set_author(name=username)
                 avatar_embed.set_image(url=avatar_url)
-                formatted_message = f"{cleaned_message}\n-# <t:{unix_timestamp}:T>"
-                sent_message = await self.bridge_channel.send(content=formatted_message, embed=avatar_embed)
-                log_verbose(f"🖼️ Sent message with avatar image")
+                sent_message = await self.bridge_channel.send(embed=avatar_embed)
+                log_verbose(f"🖼️ Sent message as embed with avatar")
             else:
+                # Send as plain text without avatar
                 formatted_message = f"**{username}**:\n{cleaned_message}\n-# <t:{unix_timestamp}:T>"
                 sent_message = await self.bridge_channel.send(formatted_message)
             
