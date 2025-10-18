@@ -1446,10 +1446,23 @@ class DiscordCourtBot(discord.Client):
             # Fetch character avatar if character_id and pose_id are provided
             avatar_url = None
             if character_id is not None and pose_id is not None:
+<<<<<<< Updated upstream
                 avatar_data = await self.fetch_character_avatar(character_id, pose_id)
                 if avatar_data:
                     avatar_url = avatar_data['url']
                     log_verbose(f"🎭 Fetched avatar for {avatar_data['character_name']} - {avatar_data['pose_name']}")
+=======
+                try:
+                    avatar_data = await self.fetch_character_avatar(character_id, pose_id)
+                    if avatar_data:
+                        avatar_url = avatar_data['url']
+                        log_verbose(f"🎭 Fetched avatar for {avatar_data['character_name']} - {avatar_data['pose_name']}")
+                    else:
+                        log_verbose(f"⚠️ Could not fetch avatar for character {character_id}, pose {pose_id} - will send as plain text")
+                except Exception as e:
+                    log_verbose(f"⚠️ Error fetching avatar for character {character_id}, pose {pose_id}: {e} - will send as plain text")
+                    avatar_url = None
+>>>>>>> Stashed changes
             
             unix_timestamp = int(time.time())
             
@@ -1502,22 +1515,33 @@ class DiscordCourtBot(discord.Client):
                 except Exception as e:
                     log_verbose(f"⚠️ Failed to edit previous avatar embeds: {e}")
             
-            # Now send the new message
-            if showing_new_avatar:
-                # Create embed with avatar at top, then username and message below
-                avatar_embed = discord.Embed(
-                    title=username,
-                    description=cleaned_message,
-                    color=0x1e1e1e,
-                    timestamp=datetime.fromtimestamp(unix_timestamp, tz=timezone.utc)
-                )
-                avatar_embed.set_image(url=avatar_url)
-                sent_message = await self.bridge_channel.send(embed=avatar_embed)
-                log_verbose(f"🖼️ Sent message as embed with avatar (user_changed={user_changed}, pose_changed={pose_changed})")
-            else:
-                # Send as plain text without avatar (no avatar available OR same user+pose as last message)
-                formatted_message = f"**{username}**:\n{cleaned_message}\n-# <t:{unix_timestamp}:T>"
-                sent_message = await self.bridge_channel.send(formatted_message)
+            # Now send the new message - ALWAYS send even if there are errors
+            try:
+                if showing_new_avatar:
+                    # Create embed with avatar at top, then username and message below
+                    avatar_embed = discord.Embed(
+                        title=username,
+                        description=cleaned_message,
+                        color=0x1e1e1e,
+                        timestamp=datetime.fromtimestamp(unix_timestamp, tz=timezone.utc)
+                    )
+                    avatar_embed.set_image(url=avatar_url)
+                    sent_message = await self.bridge_channel.send(embed=avatar_embed)
+                    log_verbose(f"🖼️ Sent message as embed with avatar (user_changed={user_changed}, pose_changed={pose_changed})")
+                else:
+                    # Send as plain text without avatar (no avatar available OR same user+pose as last message)
+                    formatted_message = f"**{username}**:\n{cleaned_message}\n-# <t:{unix_timestamp}:T>"
+                    sent_message = await self.bridge_channel.send(formatted_message)
+            except Exception as e:
+                # If embed sending fails (e.g., bad avatar URL), fall back to plain text
+                print(f"⚠️ Failed to send message as embed: {e}")
+                log_verbose(f"⚠️ Falling back to plain text for: {username}: {cleaned_message}")
+                try:
+                    formatted_message = f"**{username}**:\n{cleaned_message}\n-# <t:{unix_timestamp}:T>"
+                    sent_message = await self.bridge_channel.send(formatted_message)
+                except Exception as e2:
+                    print(f"❌ Failed to send message even as plain text: {e2}")
+                    return  # Exit early if we can't send at all
             
             # Update tracking for next message
             self.last_discord_message = sent_message
