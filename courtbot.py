@@ -1403,10 +1403,20 @@ class DiscordCourtBot(discord.Client):
                         
                         # Format as plain message without avatar
                         formatted_old = f"**{old_username}**:\n{old_message}\n-# <t:{unix_timestamp_old}:T>"
-                        await self.last_discord_message.edit(content=formatted_old, embeds=[])
+                        
+                        # Edit the message - need to await the result
+                        edited_msg = await self.last_discord_message.edit(content=formatted_old, embeds=[])
                         log_verbose(f"✏️ Converted previous message from {self.last_message_username} to plain text")
+                        
+                        # Update reference to the edited message
+                        self.last_discord_message = edited_msg
+                except discord.errors.HTTPException as e:
+                    print(f"⚠️ HTTP error editing previous message: {e.status} - {e.text}")
+                except discord.errors.Forbidden as e:
+                    print(f"⚠️ Permission denied editing previous message: {e}")
                 except Exception as e:
-                    log_verbose(f"⚠️ Failed to edit previous message: {e}")
+                    print(f"⚠️ Failed to edit previous message: {type(e).__name__}: {e}")
+            
             
             # Fetch character avatar if character_id and pose_id are provided
             avatar_url = None
