@@ -1487,15 +1487,23 @@ class DiscordCourtBot(discord.Client):
                         # Check if this message has an avatar embed
                         if message.embeds and len(message.embeds) > 0:
                             embed = message.embeds[0]
-                            # Check if it's an avatar embed (has title, description, and image)
-                            if embed.title and embed.description and embed.image:
+                            # Check if it's an avatar embed (has title and image)
+                            # Description might be empty, zero-width space, or actual text
+                            if embed.title and embed.image:
                                 # Extract the timestamp from the message
                                 msg_timestamp = int(message.created_at.timestamp())
                                 embed_username = embed.title
-                                embed_message = embed.description
+                                # Handle empty/zero-width space descriptions
+                                embed_message = embed.description if embed.description else ""
+                                # Replace zero-width space with empty string for display
+                                if embed_message == "\u200b":
+                                    embed_message = ""
                                 
-                                # Format as plain message without avatar
-                                formatted_plain = f"**{embed_username}**:\n{embed_message}\n-# <t:{msg_timestamp}:T>"
+                                # Format as plain message without avatar (handle empty messages)
+                                if embed_message:
+                                    formatted_plain = f"**{embed_username}**:\n{embed_message}\n-# <t:{msg_timestamp}:T>"
+                                else:
+                                    formatted_plain = f"**{embed_username}**:\n-# <t:{msg_timestamp}:T>"
                                 await message.edit(content=formatted_plain, embeds=[])
                                 converted_count += 1
                                 log_verbose(f"✏️ Converted avatar embed from {embed_username} to plain text")
@@ -1512,9 +1520,11 @@ class DiscordCourtBot(discord.Client):
             try:
                 if showing_new_avatar:
                     # Create embed with avatar at top, then username and message below
+                    # Use a zero-width space if message is empty to ensure embed has a description
+                    embed_description = cleaned_message if cleaned_message and cleaned_message.strip() else "\u200b"
                     avatar_embed = discord.Embed(
                         title=username,
-                        description=cleaned_message,
+                        description=embed_description,
                         color=0x1e1e1e,
                         timestamp=datetime.fromtimestamp(unix_timestamp, tz=timezone.utc)
                     )
