@@ -1409,16 +1409,21 @@ class DiscordCourtBot(discord.Client):
                     log_verbose(f"🎭 Fetched avatar for {avatar_data['character_name']} - {avatar_data['pose_name']}")
             
             unix_timestamp = int(time.time())
-            formatted_message = f"**{username}**:\n{cleaned_message}\n-# <t:{unix_timestamp}:T>"
             
             # Send message with avatar if available
             if avatar_url:
-                # Create embed with avatar as thumbnail
-                avatar_embed = discord.Embed(color=0x1e1e1e)
-                avatar_embed.set_thumbnail(url=avatar_url)
+                # Create embed with avatar between username and message
+                # Username goes in the embed description, image in the middle, message as content
+                avatar_embed = discord.Embed(
+                    description=f"**{username}**:",
+                    color=0x1e1e1e
+                )
+                avatar_embed.set_image(url=avatar_url)
+                formatted_message = f"{cleaned_message}\n-# <t:{unix_timestamp}:T>"
                 sent_message = await self.bridge_channel.send(content=formatted_message, embed=avatar_embed)
-                log_verbose(f"🖼️ Sent message with avatar thumbnail")
+                log_verbose(f"🖼️ Sent message with avatar image")
             else:
+                formatted_message = f"**{username}**:\n{cleaned_message}\n-# <t:{unix_timestamp}:T>"
                 sent_message = await self.bridge_channel.send(formatted_message)
             
             # Update tracking for next message
