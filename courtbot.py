@@ -455,6 +455,8 @@ class DiscordCourtBot(discord.Client):
         self.last_discord_message = None
         self.last_message_username = None
         self.last_message_pose_id = None  # Track pose to detect pose changes
+        # Avatar display toggle (default enabled)
+        self.show_avatars = True
         # Create command tree
         self.tree = app_commands.CommandTree(self)
     async def setup_hook(self):
@@ -557,7 +559,7 @@ class DiscordCourtBot(discord.Client):
                     )
                     startup_embed.add_field(
                         name="Available Commands",
-                        value="/status - Check bridge status\n/reconnect - Reconnect to courtroom\n/nickname - Set your bridge nickname\n/color - Set your bridge message color\n/character - Set your character/pose\n/shaba\n/help - Show this help",
+                        value="/status - Check bridge status\n/reconnect - Reconnect to courtroom\n/nickname - Set your bridge nickname\n/color - Set your bridge message color\n/character - Set your character/pose\n/avatars - Toggle avatar display\n/shaba\n/help - Show this help",
                         inline=False
                     )
                     startup_embed.add_field(
@@ -606,7 +608,7 @@ class DiscordCourtBot(discord.Client):
             )
             embed.add_field(
                 name="Commands",
-                value="/status - Check bridge status\n/reconnect - Reconnect to courtroom\n/nickname - Set/reset your bridge nickname\n/color - Set your message color\n/character - Set your character/pose\n/shaba\n/help - Show this help",
+                value="/status - Check bridge status\n/reconnect - Reconnect to courtroom\n/nickname - Set/reset your bridge nickname\n/color - Set your message color\n/character - Set your character/pose\n/avatars - Toggle avatar display\n/shaba\n/help - Show this help",
                 inline=False
             )
             embed.add_field(
@@ -734,6 +736,58 @@ class DiscordCourtBot(discord.Client):
                 f"✅ Your character/pose is now set to:\n**Character ID:** {char_id_int}\n**Pose ID:** {pose_id_int}\n\nYour messages will appear with this character in the courtroom. Use `/character reset` to remove it.",
                 ephemeral=True
             )
+
+        @self.tree.command(name="avatars", description="Toggle character avatar display in Discord")
+        @app_commands.describe(enabled="Enable or disable avatar display")
+        @app_commands.choices(enabled=[
+            app_commands.Choice(name="Enable", value="enable"),
+            app_commands.Choice(name="Disable", value="disable")
+        ])
+        async def avatars_command(interaction: discord.Interaction, enabled: app_commands.Choice[str]):
+            """Toggle avatar display"""
+            if enabled.value == "enable":
+                self.show_avatars = True
+                status_emoji = "✅"
+                status_text = "enabled"
+                description = "Character avatars will now be displayed in Discord messages."
+            else:
+                self.show_avatars = False
+                status_emoji = "❌"
+                status_text = "disabled"
+                description = "Character avatars will no longer be displayed. All messages will be plain text."
+                
+                # Convert any existing avatar embeds to plain text
+                try:
+                    log_verbose(f"🔍 Converting existing avatar embeds to plain text...")
+                    converted_count = 0
+                    
+                    async for message in self.bridge_channel.history(limit=50):
+                        if message == self.startup_message or message.author != self.user:
+                            continue
+                        
+                        if message.embeds and len(message.embeds) > 0:
+                            embed = message.embeds[0]
+                            if embed.title and embed.description and embed.image:
+                                msg_timestamp = int(message.created_at.timestamp())
+                                embed_username = embed.title
+                                embed_message = embed.description
+                                
+                                formatted_plain = f"**{embed_username}**:\n{embed_message}\n-# <t:{msg_timestamp}:T>"
+                                await message.edit(content=formatted_plain, embeds=[])
+                                converted_count += 1
+                    
+                    if converted_count > 0:
+                        log_verbose(f"✅ Converted {converted_count} existing avatar embed(s) to plain text")
+                except Exception as e:
+                    log_verbose(f"⚠️ Error converting existing embeds: {e}")
+            
+            embed = discord.Embed(
+                title=f"{status_emoji} Avatars {status_text.capitalize()}",
+                description=description,
+                color=0x00ff00 if enabled.value == "enable" else 0xff9900
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=False)
+            print(f"[AVATARS] Avatar display {status_text} by {interaction.user.display_name}")
 
         @self.tree.command(name="shaba")
         async def shaba_command(interaction: discord.Interaction):
@@ -1179,7 +1233,7 @@ class DiscordCourtBot(discord.Client):
             )
             embed.add_field(
                 name="Available Commands",
-                value="/status - Check bridge status\n/reconnect - Reconnect to courtroom\n/nickname - Set your bridge nickname\n/color - Set your message color\n/character - Set your character/pose\n/shaba\n/help - Show this help",
+                value="/status - Check bridge status\n/reconnect - Reconnect to courtroom\n/nickname - Set your bridge nickname\n/color - Set your message color\n/character - Set your character/pose\n/avatars - Toggle avatar display\n/shaba\n/help - Show this help",
                 inline=False
             )
             embed.add_field(
@@ -1399,13 +1453,13 @@ class DiscordCourtBot(discord.Client):
             
             unix_timestamp = int(time.time())
             
-            # Show avatar embed if: avatar exists AND (different user OR different pose)
+            # Show avatar embed if: avatars enabled AND avatar exists AND (different user OR different pose)
             # This allows same user to show new avatar when they change their pose
             pose_changed = pose_id is not None and self.last_message_pose_id != pose_id
             user_changed = self.last_message_username != username
             
             # Determine if we're showing an avatar embed for this new message
-            showing_new_avatar = avatar_url and (user_changed or pose_changed)
+            showing_new_avatar = self.show_avatars and avatar_url and (user_changed or pose_changed)
             
             # Edit ALL previous avatar embeds to plain text BEFORE sending new message
             # Only do this if we're about to show a new avatar
