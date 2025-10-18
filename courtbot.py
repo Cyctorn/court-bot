@@ -454,6 +454,7 @@ class DiscordCourtBot(discord.Client):
         # Track the last message sent to Discord for avatar management
         self.last_discord_message = None
         self.last_message_username = None
+        self.last_message_pose_id = None  # Track pose to detect pose changes
         # Create command tree
         self.tree = app_commands.CommandTree(self)
     async def setup_hook(self):
@@ -1417,9 +1418,12 @@ class DiscordCourtBot(discord.Client):
             
             unix_timestamp = int(time.time())
             
-            # Only show avatar embed if it's from a different user than the last message
-            # Same user consecutive messages should be plain text
-            if avatar_url and self.last_message_username != username:
+            # Show avatar embed if: avatar exists AND (different user OR different pose)
+            # This allows same user to show new avatar when they change their pose
+            pose_changed = pose_id is not None and self.last_message_pose_id != pose_id
+            user_changed = self.last_message_username != username
+            
+            if avatar_url and (user_changed or pose_changed):
                 # Create embed with avatar at top, then username and message below
                 avatar_embed = discord.Embed(
                     title=username,
@@ -1429,15 +1433,16 @@ class DiscordCourtBot(discord.Client):
                 )
                 avatar_embed.set_image(url=avatar_url)
                 sent_message = await self.bridge_channel.send(embed=avatar_embed)
-                log_verbose(f"🖼️ Sent message as embed with avatar")
+                log_verbose(f"🖼️ Sent message as embed with avatar (user_changed={user_changed}, pose_changed={pose_changed})")
             else:
-                # Send as plain text without avatar (no avatar available OR same user as last message)
+                # Send as plain text without avatar (no avatar available OR same user+pose as last message)
                 formatted_message = f"**{username}**:\n{cleaned_message}\n-# <t:{unix_timestamp}:T>"
                 sent_message = await self.bridge_channel.send(formatted_message)
             
             # Update tracking for next message
             self.last_discord_message = sent_message
             self.last_message_username = username
+            self.last_message_pose_id = pose_id
             
             # Log the message in simple format for non-verbose mode
             log_message("Chatroom", username, cleaned_message)
