@@ -1407,25 +1407,46 @@ class DiscordCourtBot(discord.Client):
             # Determine if we're showing an avatar embed for this new message
             showing_new_avatar = avatar_url and (user_changed or pose_changed)
             
-            # Edit previous message to remove avatar BEFORE sending new message
-            # Only edit if: there WAS a previous message with embed AND (we're showing new avatar OR different user)
-            if self.last_discord_message and (showing_new_avatar or user_changed):
+            # Edit ALL previous avatar embeds to plain text BEFORE sending new message
+            # Only do this if we're about to show a new avatar
+            if showing_new_avatar and self.bridge_channel:
                 try:
-                    # Check if the previous message has embeds (meaning it has an avatar)
-                    if self.last_discord_message.embeds:
-                        # Extract the timestamp from the message
-                        unix_timestamp_old = int(self.last_discord_message.created_at.timestamp())
-                        # Get the username and message from the embed
-                        old_embed = self.last_discord_message.embeds[0]
-                        old_username = old_embed.title if old_embed.title else self.last_message_username
-                        old_message = old_embed.description if old_embed.description else ""
+                    log_verbose(f"🔍 Scanning for previous avatar embeds to convert...")
+                    converted_count = 0
+                    
+                    # Look through recent messages (limit to avoid excessive API calls)
+                    async for message in self.bridge_channel.history(limit=50):
+                        # Skip the startup message
+                        if message == self.startup_message:
+                            continue
                         
-                        # Format as plain message without avatar
-                        formatted_old = f"**{old_username}**:\n{old_message}\n-# <t:{unix_timestamp_old}:T>"
-                        await self.last_discord_message.edit(content=formatted_old, embeds=[])
-                        log_verbose(f"✏️ Converted previous message from {old_username} to plain text")
+                        # Skip messages from other bots or non-bot messages
+                        if message.author != self.user:
+                            continue
+                        
+                        # Check if this message has an avatar embed
+                        if message.embeds and len(message.embeds) > 0:
+                            embed = message.embeds[0]
+                            # Check if it's an avatar embed (has title, description, and image)
+                            if embed.title and embed.description and embed.image:
+                                # Extract the timestamp from the message
+                                msg_timestamp = int(message.created_at.timestamp())
+                                embed_username = embed.title
+                                embed_message = embed.description
+                                
+                                # Format as plain message without avatar
+                                formatted_plain = f"**{embed_username}**:\n{embed_message}\n-# <t:{msg_timestamp}:T>"
+                                await message.edit(content=formatted_plain, embeds=[])
+                                converted_count += 1
+                                log_verbose(f"✏️ Converted avatar embed from {embed_username} to plain text")
+                    
+                    if converted_count > 0:
+                        log_verbose(f"✅ Converted {converted_count} avatar embed(s) to plain text")
+                    else:
+                        log_verbose(f"ℹ️ No previous avatar embeds found to convert")
+                        
                 except Exception as e:
-                    log_verbose(f"⚠️ Failed to edit previous message: {e}")
+                    log_verbose(f"⚠️ Failed to edit previous avatar embeds: {e}")
             
             # Now send the new message
             if showing_new_avatar:
