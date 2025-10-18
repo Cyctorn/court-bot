@@ -357,6 +357,51 @@ class DiscordCourtBot(discord.Client):
             print(f"❌ Error fetching evidence data for ID {evidence_id}: {e}")
             return None
 
+    async def fetch_character_avatar(self, character_id, pose_id):
+        """Fetch character avatar (idle image) from objection.lol's API"""
+        try:
+            # Use the character API endpoint
+            api_url = f"https://objection.lol/api/assets/character/{character_id}"
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.get(api_url) as response:
+                    if response.status == 200:
+                        character_data = await response.json()
+                        character_name = character_data.get('name', 'Unknown')
+                        poses = character_data.get('poses', [])
+                        
+                        # Find the matching pose
+                        for pose in poses:
+                            if pose.get('id') == pose_id:
+                                idle_image_url = pose.get('idleImageUrl')
+                                pose_name = pose.get('name', 'Unknown Pose')
+                                
+                                if idle_image_url:
+                                    log_verbose(f"🎭 Found avatar for character {character_id} ({character_name}), pose {pose_id} ({pose_name}): {idle_image_url}")
+                                    return {
+                                        'url': idle_image_url,
+                                        'character_name': character_name,
+                                        'pose_name': pose_name,
+                                        'character_id': character_id,
+                                        'pose_id': pose_id
+                                    }
+                                else:
+                                    log_verbose(f"❌ No idle image URL found for character {character_id}, pose {pose_id}")
+                                    return None
+                        
+                        # Pose not found
+                        log_verbose(f"❌ Pose {pose_id} not found for character {character_id}")
+                        return None
+                    elif response.status == 404:
+                        log_verbose(f"❌ Character ID {character_id} not found")
+                        return None
+                    else:
+                        log_verbose(f"❌ Failed to fetch character data for ID {character_id} (status: {response.status})")
+                        return None
+        except Exception as e:
+            log_verbose(f"❌ Error fetching character avatar for ID {character_id}: {e}")
+            return None
+
     def strip_color_codes(self, text):
         """Remove objection.lol color codes from text"""
         import re
@@ -405,6 +450,9 @@ class DiscordCourtBot(discord.Client):
         self.colors = load_colors()
         # Character/Pose mapping: discord user id (str) -> {character_id: int, pose_id: int}
         self.characters = load_characters()
+        # Track the last message sent to Discord for avatar management
+        self.last_discord_message = None
+        self.last_message_username = None
         # Create command tree
         self.tree = app_commands.CommandTree(self)
     async def setup_hook(self):
@@ -1256,7 +1304,7 @@ class DiscordCourtBot(discord.Client):
             else:
                 log_verbose(f"❌ Failed to send message to objection.lol")
             await self.cleanup_messages()
-    async def send_to_discord(self, username, message):
+    async def send_to_discord(self, username, message, character_id=None, pose_id=None):
         """Send a message from objection.lol to Discord"""
         if self.bridge_channel:
             # Strip color codes before sending to Discord
@@ -1339,9 +1387,44 @@ class DiscordCourtBot(discord.Client):
                         await self.bridge_channel.send(embed=evidence_embed)
                         log_verbose(f"📄 Posted evidence {evidence_id}: '{evidence_data['name']}' -> {evidence_data['url']}")
             
+            # Edit previous message to remove avatar if it's from a different user
+            if self.last_discord_message and self.last_message_username != username:
+                try:
+                    # Remove avatar by editing to plain text without embed
+                    unix_timestamp_old = int(self.last_discord_message.created_at.timestamp())
+                    old_content = self.last_discord_message.content.split('\n')[0]  # Get username line
+                    old_message_text = '\n'.join(self.last_discord_message.content.split('\n')[1:-1])  # Get message text without timestamp
+                    formatted_old = f"{old_content}\n{old_message_text}\n-# <t:{unix_timestamp_old}:T>"
+                    await self.last_discord_message.edit(content=formatted_old, embed=None)
+                    log_verbose(f"✏️ Edited previous message from {self.last_message_username} to remove avatar")
+                except Exception as e:
+                    log_verbose(f"⚠️ Failed to edit previous message: {e}")
+            
+            # Fetch character avatar if character_id and pose_id are provided
+            avatar_url = None
+            if character_id is not None and pose_id is not None:
+                avatar_data = await self.fetch_character_avatar(character_id, pose_id)
+                if avatar_data:
+                    avatar_url = avatar_data['url']
+                    log_verbose(f"🎭 Fetched avatar for {avatar_data['character_name']} - {avatar_data['pose_name']}")
+            
             unix_timestamp = int(time.time())
             formatted_message = f"**{username}**:\n{cleaned_message}\n-# <t:{unix_timestamp}:T>"
-            sent_message = await self.bridge_channel.send(formatted_message)
+            
+            # Send message with avatar if available
+            if avatar_url:
+                # Create embed with avatar as thumbnail
+                avatar_embed = discord.Embed(color=0x1e1e1e)
+                avatar_embed.set_thumbnail(url=avatar_url)
+                sent_message = await self.bridge_channel.send(content=formatted_message, embed=avatar_embed)
+                log_verbose(f"🖼️ Sent message with avatar thumbnail")
+            else:
+                sent_message = await self.bridge_channel.send(formatted_message)
+            
+            # Update tracking for next message
+            self.last_discord_message = sent_message
+            self.last_message_username = username
+            
             # Log the message in simple format for non-verbose mode
             log_message("Chatroom", username, cleaned_message)
             log_verbose(f"🔄 Objection → Discord: {username}: {cleaned_message}")
@@ -1967,7 +2050,10 @@ class ObjectionBot:
             log_verbose(f"📨 Received: {username}: {text}")
             # Send to Discord if connected
             if self.discord_bot:
-                await self.discord_bot.send_to_discord(username, text)
+                # Extract character and pose IDs from the message data
+                character_id = message.get('characterId')
+                pose_id = message.get('poseId')
+                await self.discord_bot.send_to_discord(username, text, character_id, pose_id)
     
     async def handle_room_update(self, data):
         """Handle room updates to get user information"""
