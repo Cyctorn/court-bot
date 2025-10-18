@@ -1446,12 +1446,6 @@ class DiscordCourtBot(discord.Client):
             # Fetch character avatar if character_id and pose_id are provided
             avatar_url = None
             if character_id is not None and pose_id is not None:
-<<<<<<< Updated upstream
-                avatar_data = await self.fetch_character_avatar(character_id, pose_id)
-                if avatar_data:
-                    avatar_url = avatar_data['url']
-                    log_verbose(f"🎭 Fetched avatar for {avatar_data['character_name']} - {avatar_data['pose_name']}")
-=======
                 try:
                     avatar_data = await self.fetch_character_avatar(character_id, pose_id)
                     if avatar_data:
@@ -1462,7 +1456,6 @@ class DiscordCourtBot(discord.Client):
                 except Exception as e:
                     log_verbose(f"⚠️ Error fetching avatar for character {character_id}, pose {pose_id}: {e} - will send as plain text")
                     avatar_url = None
->>>>>>> Stashed changes
             
             unix_timestamp = int(time.time())
             
