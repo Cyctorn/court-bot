@@ -581,9 +581,13 @@ class DiscordCourtBot(discord.Client):
         async def reconnect(interaction: discord.Interaction):
             """Reconnect to objection.lol"""
             await interaction.response.defer(ephemeral=True)
+            
+            # Disconnect if already connected
             if self.objection_bot.connected:
-                await interaction.followup.send("⚠️ Already connected to objection.lol", ephemeral=True)
-                return
+                print("🔌 Disconnecting before reconnection...")
+                await self.objection_bot.disconnect()
+                await asyncio.sleep(1)  # Give time for clean disconnect
+            
             try:
                 print("🔄 Attempting manual reconnection...")
                 # Reset reconnect attempts for manual reconnection
