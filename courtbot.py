@@ -310,6 +310,52 @@ class DiscordCourtBot(discord.Client):
         matches = re.findall(bgm_pattern, text)
         return matches
 
+    async def fetch_sfx_url(self, sfx_id):
+        """Fetch the actual external URL for a SFX ID from objection.lol's API"""
+        try:
+            # Use the sound effect API endpoint
+            api_url = f"https://objection.lol/api/assets/sound/{sfx_id}"
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.get(api_url) as response:
+                    if response.status == 200:
+                        sfx_data = await response.json()
+                        # Extract the external URL and sound name from the response
+                        external_url = sfx_data.get('url')
+                        sfx_name = sfx_data.get('name', 'Unknown Sound')
+                        volume = sfx_data.get('volume', 100)
+                        
+                        if external_url:
+                            # Handle relative URLs by converting them to full objection.lol URLs
+                            if external_url.startswith('/'):
+                                external_url = f"https://objection.lol{external_url}"
+                            
+                            print(f"🔊 Found sound effect for SFX {sfx_id}: '{sfx_name}' -> {external_url}")
+                            return {
+                                'url': external_url,
+                                'name': sfx_name,
+                                'volume': volume,
+                                'id': sfx_id
+                            }
+                        else:
+                            print(f"❌ No URL found in SFX data for ID {sfx_id}")
+                            return None
+                    elif response.status == 404:
+                        print(f"❌ SFX ID {sfx_id} not found")
+                        return None
+                    else:
+                        print(f"❌ Failed to fetch SFX data for ID {sfx_id} (status: {response.status})")
+                        return None
+        except Exception as e:
+            print(f"❌ Error fetching sound effect URL for ID {sfx_id}: {e}")
+            return None
+
+    def extract_sfx_commands(self, text):
+        """Extract SFX IDs from text containing [#bgs123456] commands"""
+        sfx_pattern = r'\[#bgs(\d+)\]'
+        matches = re.findall(sfx_pattern, text)
+        return matches
+
     def extract_evidence_commands(self, text):
         """Extract evidence IDs from text containing [#evdi123456] commands"""
         evidence_pattern = r'\[#evdi(\d+)\]'
@@ -535,9 +581,13 @@ class DiscordCourtBot(discord.Client):
         async def reconnect(interaction: discord.Interaction):
             """Reconnect to objection.lol"""
             await interaction.response.defer(ephemeral=True)
+            
+            # Disconnect if already connected
             if self.objection_bot.connected:
-                await interaction.followup.send("⚠️ Already connected to objection.lol", ephemeral=True)
-                return
+                print("🔌 Disconnecting before reconnection...")
+                await self.objection_bot.disconnect()
+                await asyncio.sleep(1)  # Give time for clean disconnect
+            
             try:
                 print("🔄 Attempting manual reconnection...")
                 # Reset reconnect attempts for manual reconnection
@@ -1404,6 +1454,41 @@ class DiscordCourtBot(discord.Client):
                         )
                         await self.bridge_channel.send(embed=music_embed)
                         log_verbose(f"🎵 Posted music info for BGM {bgm_id}: '{music_data['name']}' -> {music_data['url']}")
+            
+            # Check for SFX commands and fetch sound effect URLs
+            sfx_ids = self.extract_sfx_commands(message)
+            if sfx_ids:
+                for sfx_id in sfx_ids:
+                    sfx_data = await self.fetch_sfx_url(sfx_id)
+                    if sfx_data:
+                        # Send the sound effect URL as a rich embed with all available info
+                        sfx_embed = discord.Embed(
+                            title="🔊 Sound Effect",
+                            description=f"**{username}** played a sound effect",
+                            color=0xe67e22
+                        )
+                        sfx_embed.add_field(
+                            name="Sound Name",
+                            value=sfx_data['name'],
+                            inline=True
+                        )
+                        sfx_embed.add_field(
+                            name="Sound ID",
+                            value=f"#{sfx_data['id']}",
+                            inline=True
+                        )
+                        sfx_embed.add_field(
+                            name="Volume",
+                            value=f"{sfx_data['volume']}%",
+                            inline=True
+                        )
+                        sfx_embed.add_field(
+                            name="Audio File",
+                            value=sfx_data['url'],
+                            inline=False
+                        )
+                        await self.bridge_channel.send(embed=sfx_embed)
+                        log_verbose(f"🔊 Posted sound effect info for SFX {sfx_id}: '{sfx_data['name']}' -> {sfx_data['url']}")
             
             # Check for evidence commands and fetch evidence data
             evidence_ids = self.extract_evidence_commands(message)
