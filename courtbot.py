@@ -1656,9 +1656,9 @@ class DiscordCourtBot(discord.Client):
                         
                         # Format as plain message without avatar (handle empty messages)
                         if embed_message:
-                            formatted_plain = f"**{embed_username}**\n{embed_message}\n-# <t:{msg_timestamp}:T>"
+                            formatted_plain = f"**{embed_username}**:\n{embed_message}\n-# <t:{msg_timestamp}:T>"
                         else:
-                            formatted_plain = f"**{embed_username}**\n-# <t:{msg_timestamp}:T>"
+                            formatted_plain = f"**{embed_username}**:\n-# <t:{msg_timestamp}:T>"
                         await self.last_avatar_message.edit(content=formatted_plain, embeds=[])
                         log_verbose(f"✏️ Converted last avatar embed from {embed_username} to plain text")
                     self.last_avatar_message = None  # Clear after conversion
