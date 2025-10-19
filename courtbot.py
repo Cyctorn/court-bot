@@ -293,7 +293,7 @@ class DiscordCourtBot(discord.Client):
         self._mention_pattern = re.compile(r'<@\d+>')
         self._bgm_pattern = re.compile(r'\[#bgm(\d+)\]')
         self._sfx_pattern = re.compile(r'\[#bgs(\d+)\]')
-        self._evidence_pattern = re.compile(r'\[#evdi(\d+)\]')
+        self._evidence_pattern = re.compile(r'\[#evdi?(\d+)\]')
         self._color_code_pattern = re.compile(r'\[#/[a-zA-Z]\]|\[#/c[a-fA-F0-9]{6}\]|\[/#\]|\[#ts\d+\]')
     
     async def fetch_music_url(self, bgm_id):
