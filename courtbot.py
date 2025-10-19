@@ -2750,24 +2750,26 @@ class ObjectionBot:
                 
                 username, message_text, character_id, pose_id = queue_item
                 
-                # Only change username if it's different from the last one
-                # This optimization skips username changes when same user sends multiple messages
-                if username != self._last_queued_username:
-                    log_verbose(f"[QUEUE] Username change needed: {self._last_queued_username} → {username}")
-                    success = await self._send_username_change(username)
-                    if not success:
-                        log_verbose(f"[QUEUE] Failed to change username, skipping message")
-                        self._relay_queue.task_done()
-                        continue
-                    self._last_queued_username = username
-                else:
-                    # Same user - add a small delay to prevent server overload
-                    # This is necessary because server needs time even without username change
-                    log_verbose(f"[QUEUE] Username unchanged ({username}), adding short delay")
-                    await asyncio.sleep(0.08)  # Match username change delay for consistency
-                
-                # Send the message
-                success = await self._send_message_internal(message_text, character_id, pose_id)
+                # Use lock to ensure the entire sequence is atomic
+                async with self._message_lock:
+                    # Only change username if it's different from the last one
+                    # This optimization skips username changes when same user sends multiple messages
+                    if username != self._last_queued_username:
+                        log_verbose(f"[QUEUE] Username change needed: {self._last_queued_username} → {username}")
+                        success = await self._send_username_change(username)
+                        if not success:
+                            log_verbose(f"[QUEUE] Failed to change username, skipping message")
+                            self._relay_queue.task_done()
+                            continue
+                        self._last_queued_username = username
+                    else:
+                        # Same user - add a small delay to prevent server overload
+                        # This is necessary because server needs time even without username change
+                        log_verbose(f"[QUEUE] Username unchanged ({username}), adding short delay")
+                        await asyncio.sleep(0.08)  # Match username change delay for consistency
+                    
+                    # Send the message
+                    success = await self._send_message_internal(message_text, character_id, pose_id)
                 
                 if success:
                     log_verbose(f"[QUEUE] ✓ Sent: {username}: {message_text[:50]}...")
@@ -2788,59 +2790,57 @@ class ObjectionBot:
     
     async def _send_username_change(self, new_username):
         """Internal method to change username (used by queue processor)"""
-        # Use lock to ensure username changes happen sequentially
-        async with self._message_lock:
-            # Skip if username is already current
-            if self._current_username == new_username:
-                log_verbose(f"[DEBUG] Username already set to {new_username}, skipping change")
-                return True
+        # No lock needed - queue processor ensures sequential execution
+        # Skip if username is already current
+        if self._current_username == new_username:
+            log_verbose(f"[DEBUG] Username already set to {new_username}, skipping change")
+            return True
+        
+        # Check if WebSocket is still connected
+        if not self.connected or not self.websocket or self.websocket.close_code is not None:
+            log_verbose("❌ Cannot change username - not connected")
+            return False
+        
+        try:
+            # Send username change via WebSocket
+            message_data = {"username": new_username}
+            message = f'42["change_username",{json.dumps(message_data)}]'
+            await self.websocket.send(message)
             
-            # Check if WebSocket is still connected
-            if not self.connected or not self.websocket or self.websocket.close_code is not None:
-                log_verbose("❌ Cannot change username - not connected")
-                return False
+            # Minimal delay for username propagation (optimized)
+            await asyncio.sleep(0.08)
             
-            try:
-                # Send username change via WebSocket
-                message_data = {"username": new_username}
-                message = f'42["change_username",{json.dumps(message_data)}]'
-                await self.websocket.send(message)
-                
-                # Minimal delay for username propagation (optimized)
-                await asyncio.sleep(0.08)
-                
-                # Update current username tracking
-                self._current_username = new_username
-                return True
-            except Exception as e:
-                log_verbose(f"❌ Username change failed: {e}")
-                return False
+            # Update current username tracking
+            self._current_username = new_username
+            return True
+        except Exception as e:
+            log_verbose(f"❌ Username change failed: {e}")
+            return False
     
     async def _send_message_internal(self, text, character_id=None, pose_id=None):
         """Internal method to send message (used by queue processor)"""
-        # Use lock to ensure messages are sent sequentially
-        async with self._message_lock:
-            if not self.connected or not self.websocket or self.websocket.close_code is not None:
-                return False
-            
-            # Use provided character/pose or fall back to config defaults
-            char_id = character_id if character_id is not None else self.config.get('settings', 'character_id')
-            p_id = pose_id if pose_id is not None else self.config.get('settings', 'pose_id')
-            message_data = {
-                "characterId": char_id,
-                "poseId": p_id,
-                "text": text
-            }
-            
-            try:
-                message = f'42["message",{json.dumps(message_data)}]'
-                await self.websocket.send(message)
-                # Minimal delay to prevent rate limiting (optimized)
-                await asyncio.sleep(0.05)
-                return True
-            except Exception as e:
-                log_verbose(f"❌ Send failed: {e}")
-                return False
+        # No lock needed - queue processor ensures sequential execution
+        if not self.connected or not self.websocket or self.websocket.close_code is not None:
+            return False
+        
+        # Use provided character/pose or fall back to config defaults
+        char_id = character_id if character_id is not None else self.config.get('settings', 'character_id')
+        p_id = pose_id if pose_id is not None else self.config.get('settings', 'pose_id')
+        message_data = {
+            "characterId": char_id,
+            "poseId": p_id,
+            "text": text
+        }
+        
+        try:
+            message = f'42["message",{json.dumps(message_data)}]'
+            await self.websocket.send(message)
+            # Minimal delay to prevent rate limiting (optimized)
+            await asyncio.sleep(0.05)
+            return True
+        except Exception as e:
+            log_verbose(f"❌ Send failed: {e}")
+            return False
     
     async def queue_message(self, username, message_text, character_id=None, pose_id=None):
         """
