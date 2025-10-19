@@ -1476,28 +1476,24 @@ class DiscordCourtBot(discord.Client):
                 send_content = f"{display_name}: {colored_content}"
                 log_verbose(f"📏 Username too long, using base name: {target_username}, prefixing with: {display_name}")
             
-            # Always change username for each message to prevent impersonation
-            username_changed = await self.objection_bot.change_username_and_wait(target_username)
-            if not username_changed:
-                log_verbose("❌ Failed to change username - skipping message")
-                return
-                
-            actual_username = target_username
-            
+            # Queue message for high-performance relay (NEW QUEUE SYSTEM)
             # Get user's custom character/pose if set (already batched in user_prefs)
+            char_id = None
+            p_id = None
             if user_prefs['character']:
                 char_id = user_prefs['character']['character_id']
                 p_id = user_prefs['character']['pose_id']
-                message_sent = await self.objection_bot.send_message(send_content, character_id=char_id, pose_id=p_id)
-            else:
-                message_sent = await self.objection_bot.send_message(send_content)
             
-            if message_sent:
+            # Queue the message - it will be processed by the background queue processor
+            message_queued = await self.objection_bot.queue_message(target_username, send_content, character_id=char_id, pose_id=p_id)
+            
+            if message_queued:
                 # Log the message in simple format for non-verbose mode
                 log_message("Discord", display_name, message.content if message.content else "[media]")
-                log_verbose(f"🔄 Discord → Objection: {actual_username}: {send_content}")
+                log_verbose(f"🔄 Discord → Queue: {target_username}: {send_content[:50]}...")
             else:
-                log_verbose(f"❌ Failed to send message to objection.lol")
+                log_verbose(f"❌ Failed to queue message to objection.lol")
+            
             await self.cleanup_messages()
     async def send_to_discord(self, username, message, character_id=None, pose_id=None):
         """Send a message from objection.lol to Discord"""
@@ -2003,6 +1999,11 @@ class ObjectionBot:
         self._message_lock = asyncio.Lock()  # Lock to prevent concurrent message sends
         self._current_username = self.username  # Track current username
         
+        # Advanced message queue system for high-performance relay
+        self._relay_queue = asyncio.Queue()  # Queue for Discord->Courtroom messages
+        self._queue_processor_task = None  # Background task processing the queue
+        self._last_queued_username = None  # Track last username to skip redundant changes
+        
         # Pre-compile regex patterns for performance
         self._mention_pattern = re.compile(r'<@\d+>')
     
@@ -2061,6 +2062,10 @@ class ObjectionBot:
                     
                     # Start the message processing loop only - let server handle ping/pong
                     asyncio.create_task(self.message_loop())
+                    
+                    # Start the relay queue processor for high-performance message relay
+                    self._queue_processor_task = asyncio.create_task(self._process_relay_queue())
+                    print("🚀 Started high-performance message queue processor")
                     
                     return True
                 else:
@@ -2726,6 +2731,127 @@ class ObjectionBot:
             print(f"[MOD] Failed to update moderators: {e}")
             return False
     
+    async def _process_relay_queue(self):
+        """
+        High-performance message queue processor.
+        Processes Discord->Courtroom messages with intelligent username change batching.
+        """
+        print("📋 Message queue processor started")
+        
+        while self.connected:
+            try:
+                # Get the next message from the queue (blocks until available)
+                queue_item = await self._relay_queue.get()
+                
+                # Check for shutdown signal
+                if queue_item is None:
+                    print("📋 Queue processor received shutdown signal")
+                    break
+                
+                username, message_text, character_id, pose_id = queue_item
+                
+                # Only change username if it's different from the last one
+                # This optimization skips username changes when same user sends multiple messages
+                if username != self._last_queued_username:
+                    log_verbose(f"[QUEUE] Username change needed: {self._last_queued_username} → {username}")
+                    success = await self._send_username_change(username)
+                    if not success:
+                        log_verbose(f"[QUEUE] Failed to change username, skipping message")
+                        self._relay_queue.task_done()
+                        continue
+                    self._last_queued_username = username
+                else:
+                    log_verbose(f"[QUEUE] Username unchanged ({username}), skipping change")
+                
+                # Send the message with minimal delay
+                success = await self._send_message_internal(message_text, character_id, pose_id)
+                
+                if success:
+                    log_verbose(f"[QUEUE] ✓ Sent: {username}: {message_text[:50]}...")
+                else:
+                    log_verbose(f"[QUEUE] ✗ Failed to send message from {username}")
+                
+                # Mark task as done
+                self._relay_queue.task_done()
+                
+            except asyncio.CancelledError:
+                print("📋 Queue processor cancelled")
+                break
+            except Exception as e:
+                print(f"❌ Error in queue processor: {e}")
+                # Don't break - continue processing
+        
+        print("📋 Message queue processor stopped")
+    
+    async def _send_username_change(self, new_username):
+        """Internal method to change username (used by queue processor)"""
+        # Use lock to ensure username changes happen sequentially
+        async with self._message_lock:
+            # Skip if username is already current
+            if self._current_username == new_username:
+                log_verbose(f"[DEBUG] Username already set to {new_username}, skipping change")
+                return True
+            
+            # Check if WebSocket is still connected
+            if not self.connected or not self.websocket or self.websocket.close_code is not None:
+                log_verbose("❌ Cannot change username - not connected")
+                return False
+            
+            try:
+                # Send username change via WebSocket
+                message_data = {"username": new_username}
+                message = f'42["change_username",{json.dumps(message_data)}]'
+                await self.websocket.send(message)
+                
+                # Minimal delay for username propagation (optimized)
+                await asyncio.sleep(0.08)
+                
+                # Update current username tracking
+                self._current_username = new_username
+                return True
+            except Exception as e:
+                log_verbose(f"❌ Username change failed: {e}")
+                return False
+    
+    async def _send_message_internal(self, text, character_id=None, pose_id=None):
+        """Internal method to send message (used by queue processor)"""
+        # Use lock to ensure messages are sent sequentially
+        async with self._message_lock:
+            if not self.connected or not self.websocket or self.websocket.close_code is not None:
+                return False
+            
+            # Use provided character/pose or fall back to config defaults
+            char_id = character_id if character_id is not None else self.config.get('settings', 'character_id')
+            p_id = pose_id if pose_id is not None else self.config.get('settings', 'pose_id')
+            message_data = {
+                "characterId": char_id,
+                "poseId": p_id,
+                "text": text
+            }
+            
+            try:
+                message = f'42["message",{json.dumps(message_data)}]'
+                await self.websocket.send(message)
+                # Minimal delay to prevent rate limiting (optimized)
+                await asyncio.sleep(0.05)
+                return True
+            except Exception as e:
+                log_verbose(f"❌ Send failed: {e}")
+                return False
+    
+    async def queue_message(self, username, message_text, character_id=None, pose_id=None):
+        """
+        Queue a message for high-performance relay.
+        Messages are processed in order by the background queue processor.
+        """
+        try:
+            await self._relay_queue.put((username, message_text, character_id, pose_id))
+            log_verbose(f"[QUEUE] Queued message from {username} (queue size: {self._relay_queue.qsize()})")
+            return True
+        except Exception as e:
+            print(f"❌ Failed to queue message: {e}")
+            return False
+    
     async def change_username_and_wait(self, new_username, timeout=2.0):
         """Change the bot's username using WebSocket with proper locking"""
         # Use lock to ensure username changes happen sequentially
@@ -2823,6 +2949,21 @@ class ObjectionBot:
     async def graceful_disconnect(self):
         """Gracefully disconnect: clean up Discord, update room, disconnect socket."""
         print("🔄 Starting graceful disconnect...")
+        
+        # Stop the queue processor first
+        if self._queue_processor_task and not self._queue_processor_task.done():
+            print("🛑 Stopping message queue processor...")
+            await self._relay_queue.put(None)  # Send shutdown signal
+            try:
+                await asyncio.wait_for(self._queue_processor_task, timeout=5.0)
+                print("✅ Queue processor stopped")
+            except asyncio.TimeoutError:
+                print("⚠️ Queue processor did not stop gracefully, cancelling...")
+                self._queue_processor_task.cancel()
+                try:
+                    await self._queue_processor_task
+                except asyncio.CancelledError:
+                    pass
         
         # Cancel auto-reconnect if in progress
         self.auto_reconnect = False
@@ -3338,7 +3479,10 @@ async def terminal_command_listener(objection_bot, discord_bot):
                 print(f"   User ID: {objection_bot.user_id}")
                 print(f"   Pending Username: {objection_bot._pending_username}")
                 print(f"   Pending Pair Request: {bool(objection_bot._pending_pair_request)}")
-                print(f"   Message Queue Size: {objection_bot.message_queue.qsize()}")
+                print(f"   Terminal Queue Size: {objection_bot.message_queue.qsize()}")
+                print(f"   Relay Queue Size: {objection_bot._relay_queue.qsize()} (Discord→Courtroom)")
+                print(f"   Last Queued Username: {objection_bot._last_queued_username}")
+                print(f"   Queue Processor Running: {objection_bot._queue_processor_task and not objection_bot._queue_processor_task.done()}")
                 print(f"   Discord Nicknames: {len(discord_bot.nicknames)} users")
                 print(f"   Discord Colors: {len(discord_bot.colors)} users")
                 if objection_bot.reconnect_task:
