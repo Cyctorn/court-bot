@@ -264,6 +264,38 @@ def log_message(source, username, message):
         print(f"({source}) {username}: {message}")
 
 class DiscordCourtBot(discord.Client):
+    def __init__(self, objection_bot, config):
+        intents = discord.Intents.default()
+        intents.message_content = True
+        super().__init__(intents=intents)
+        
+        self.objection_bot = objection_bot
+        self.config = config
+        self.bridge_channel = None
+        self.channel_id = config.get('discord', 'channel_id')
+        self.guild_id = config.get('discord', 'guild_id')
+        self.tree = app_commands.CommandTree(self)
+        
+        # Track last message info for avatar embed logic
+        self.last_discord_message = None
+        self.last_message_username = None
+        self.last_message_pose_id = None
+        self.show_avatars = True  # Track whether avatars are enabled
+        self.startup_message = None  # Track startup message to avoid deleting it
+        self.last_avatar_message = None  # Track the last avatar message for efficient editing
+        
+        # Load persistent data for nickname, color, and character customization
+        self.nicknames = load_nicknames()
+        self.colors = load_colors()
+        self.characters = load_characters()
+        
+        # Pre-compile regex patterns for performance
+        self._mention_pattern = re.compile(r'<@\d+>')
+        self._bgm_pattern = re.compile(r'\[#bgm(\d+)\]')
+        self._sfx_pattern = re.compile(r'\[#bgs(\d+)\]')
+        self._evidence_pattern = re.compile(r'\[#evdi?(\d+)\]')
+        self._color_code_pattern = re.compile(r'\[#/[a-zA-Z]\]|\[#/c[a-fA-F0-9]{6}\]|\[/#\]|\[#ts\d+\]')
+    
     async def fetch_music_url(self, bgm_id):
         """Fetch the actual external URL for a BGM ID from objection.lol's API"""
         try:
@@ -306,8 +338,7 @@ class DiscordCourtBot(discord.Client):
 
     def extract_bgm_commands(self, text):
         """Extract BGM IDs from text containing [#bgm123456] commands"""
-        bgm_pattern = r'\[#bgm(\d+)\]'
-        matches = re.findall(bgm_pattern, text)
+        matches = self._bgm_pattern.findall(text)
         return matches
 
     async def fetch_sfx_url(self, sfx_id):
@@ -352,14 +383,12 @@ class DiscordCourtBot(discord.Client):
 
     def extract_sfx_commands(self, text):
         """Extract SFX IDs from text containing [#bgs123456] commands"""
-        sfx_pattern = r'\[#bgs(\d+)\]'
-        matches = re.findall(sfx_pattern, text)
+        matches = self._sfx_pattern.findall(text)
         return matches
 
     def extract_evidence_commands(self, text):
         """Extract evidence IDs from text containing [#evdi123456] commands"""
-        evidence_pattern = r'\[#evdi(\d+)\]'
-        matches = re.findall(evidence_pattern, text)
+        matches = self._evidence_pattern.findall(text)
         return matches
 
     async def fetch_evidence_data(self, evidence_id):
@@ -455,14 +484,12 @@ class DiscordCourtBot(discord.Client):
 
     def strip_color_codes(self, text):
         """Remove objection.lol color codes from text"""
-        import re
         # Pattern to match:
         # [#/r] [#/g] [#/b] etc - single letter generic colors
         # [#/c123456] - custom hex colors with c prefix (exactly 6 hex digits)
         # [/#] - closing tags
         # [#ts123] - text speed commands with any number
-        color_pattern = r'\[#/[a-zA-Z]\]|\[#/c[a-fA-F0-9]{6}\]|\[/#\]|\[#ts\d+\]'
-        cleaned = re.sub(color_pattern, '', text)
+        cleaned = self._color_code_pattern.sub('', text)
         log_verbose(f"🎨 Color strip: '{text}' → '{cleaned}'")  # Debug line
         return cleaned
 
@@ -485,30 +512,6 @@ class DiscordCourtBot(discord.Client):
                 log_verbose(f"🎥 Found video attachment: {attachment.filename} - {attachment.url}")
         
         return media_urls
-    def __init__(self, objection_bot, config):
-        intents = discord.Intents.default()
-        intents.message_content = True
-        super().__init__(intents=intents)
-        self.objection_bot = objection_bot
-        self.config = config
-        self.channel_id = config.get('discord', 'channel_id')
-        self.guild_id = config.get('discord', 'guild_id')
-        self.bridge_channel = None
-        self.startup_message = None
-        # Nickname mapping: discord user id (str) -> nickname (str)
-        self.nicknames = load_nicknames()
-        # Color mapping: discord user id (str) -> color code (str)
-        self.colors = load_colors()
-        # Character/Pose mapping: discord user id (str) -> {character_id: int, pose_id: int}
-        self.characters = load_characters()
-        # Track the last message sent to Discord for avatar management
-        self.last_discord_message = None
-        self.last_message_username = None
-        self.last_message_pose_id = None  # Track pose to detect pose changes
-        # Avatar display toggle (default enabled)
-        self.show_avatars = True
-        # Create command tree
-        self.tree = app_commands.CommandTree(self)
     async def setup_hook(self):
         """Called when the bot is starting up"""
         # Sync slash commands ONLY to the specific guild (not globally)
@@ -540,10 +543,7 @@ class DiscordCourtBot(discord.Client):
         @self.tree.command(name="status", description="Check bridge status and list users in the courtroom", guild=discord.Object(id=self.guild_id))
         async def status(interaction: discord.Interaction):
             """Check bot status and list users"""
-            print(f"[STATUS_DEBUG] Received status command - Guild: {interaction.guild_id}, Expected: {self.guild_id}, Room: {self.objection_bot.room_id}")
-            
             if not check_guild_and_channel(interaction):
-                print(f"[STATUS_DEBUG] Rejecting - wrong guild or channel")
                 await interaction.response.send_message("❌ This command can only be used in the configured bridge channel.", ephemeral=True)
                 return
             
@@ -1207,15 +1207,10 @@ class DiscordCourtBot(discord.Client):
         ])
         async def aspect_command(interaction: discord.Interaction, ratio: app_commands.Choice[str]):
             """Change chatroom aspect ratio (admin only)"""
-            # Debug: Log all aspect command attempts
-            print(f"[ASPECT_DEBUG] Received aspect command - Guild: {interaction.guild_id}, Channel: {interaction.channel_id}, Expected Guild: {self.guild_id}, Expected Channel: {self.channel_id}, Room ID: {self.objection_bot.room_id}")
-            
             if not check_guild_and_channel(interaction):
-                print(f"[ASPECT_DEBUG] Rejecting command - wrong guild or channel")
                 await interaction.response.send_message("❌ This command can only be used in the configured bridge channel.", ephemeral=True)
                 return
             
-            print(f"[ASPECT_DEBUG] Processing aspect command for room {self.objection_bot.room_id}")
             await interaction.response.defer(ephemeral=False)
 
             if not self.objection_bot.connected:
@@ -1410,7 +1405,7 @@ class DiscordCourtBot(discord.Client):
                 return
             
             # Ignore messages with Discord user mentions (<@numbers>)
-            if re.search(r'<@\d+>', message.content):
+            if self._mention_pattern.search(message.content):
                 print(f"🚫 Ignoring message with user mention: {message.content[:50]}...")
                 return
             
@@ -1437,9 +1432,16 @@ class DiscordCourtBot(discord.Client):
             base_name = self.config.get('objection', 'bot_username')
             discord_name = message.author.display_name
             user_id = str(message.author.id)
+            
+            # Batch lookup all user preferences at once (optimization)
+            user_prefs = {
+                'nickname': self.nicknames.get(user_id),
+                'color': self.colors.get(user_id),
+                'character': self.characters.get(user_id)
+            }
+            
             # Use nickname if set, else display name
-            nickname = self.nicknames.get(user_id)
-            display_name = nickname if nickname else discord_name
+            display_name = user_prefs['nickname'] if user_prefs['nickname'] else discord_name
             new_username = f"{display_name} ({base_name})"
             
             # Debug logging to prevent impersonation issues
@@ -1448,13 +1450,12 @@ class DiscordCourtBot(discord.Client):
             log_verbose(f"🔍 Constructed username: {new_username} (length: {len(new_username)})")
             
             # Apply user's custom color if set
-            user_color = self.colors.get(user_id)
-            if user_color:
+            if user_prefs['color']:
                 # Add fast text command for media URLs, then apply color
                 if media_urls:
-                    colored_content = f"[#ts15][#/c{user_color}]{full_content}[/#]"
+                    colored_content = f"[#ts15][#/c{user_prefs['color']}]{full_content}[/#]"
                 else:
-                    colored_content = f"[#/c{user_color}]{full_content}[/#]"
+                    colored_content = f"[#/c{user_prefs['color']}]{full_content}[/#]"
             else:
                 # Add fast text command for media URLs even without color
                 if media_urls:
@@ -1475,29 +1476,24 @@ class DiscordCourtBot(discord.Client):
                 send_content = f"{display_name}: {colored_content}"
                 log_verbose(f"📏 Username too long, using base name: {target_username}, prefixing with: {display_name}")
             
-            # Always change username for each message to prevent impersonation
-            username_changed = await self.objection_bot.change_username_and_wait(target_username)
-            if not username_changed:
-                log_verbose("❌ Failed to change username - skipping message")
-                return
-                
-            actual_username = target_username
+            # Queue message for high-performance relay (NEW QUEUE SYSTEM)
+            # Get user's custom character/pose if set (already batched in user_prefs)
+            char_id = None
+            p_id = None
+            if user_prefs['character']:
+                char_id = user_prefs['character']['character_id']
+                p_id = user_prefs['character']['pose_id']
             
-            # Get user's custom character/pose if set
-            user_character = self.characters.get(user_id)
-            if user_character:
-                char_id = user_character['character_id']
-                p_id = user_character['pose_id']
-                message_sent = await self.objection_bot.send_message(send_content, character_id=char_id, pose_id=p_id)
-            else:
-                message_sent = await self.objection_bot.send_message(send_content)
+            # Queue the message - it will be processed by the background queue processor
+            message_queued = await self.objection_bot.queue_message(target_username, send_content, character_id=char_id, pose_id=p_id)
             
-            if message_sent:
+            if message_queued:
                 # Log the message in simple format for non-verbose mode
                 log_message("Discord", display_name, message.content if message.content else "[media]")
-                log_verbose(f"🔄 Discord → Objection: {actual_username}: {send_content}")
+                log_verbose(f"🔄 Discord → Queue: {target_username}: {send_content[:50]}...")
             else:
-                log_verbose(f"❌ Failed to send message to objection.lol")
+                log_verbose(f"❌ Failed to queue message to objection.lol")
+            
             await self.cleanup_messages()
     async def send_to_discord(self, username, message, character_id=None, pose_id=None):
         """Send a message from objection.lol to Discord"""
@@ -1641,54 +1637,34 @@ class DiscordCourtBot(discord.Client):
             # Determine if we're showing an avatar embed for this new message
             showing_new_avatar = self.show_avatars and avatar_url and (user_changed or pose_changed)
             
-            # Edit ALL previous avatar embeds to plain text BEFORE sending new message
-            # Only do this if we're about to show a new avatar
-            if showing_new_avatar and self.bridge_channel:
+            # Edit the last avatar embed to plain text BEFORE sending new message
+            # Only do this if we're about to show a new avatar and we have a tracked avatar message
+            if showing_new_avatar and self.last_avatar_message:
                 try:
-                    log_verbose(f"🔍 Scanning for previous avatar embeds to convert...")
-                    converted_count = 0
-                    
-                    # Look through recent messages (limit to avoid excessive API calls)
-                    async for message in self.bridge_channel.history(limit=50):
-                        # Skip the startup message
-                        if message == self.startup_message:
-                            continue
+                    log_verbose(f"🔍 Converting last avatar embed to plain text...")
+                    # Check if the message still exists and has an embed
+                    if self.last_avatar_message.embeds and len(self.last_avatar_message.embeds) > 0:
+                        embed = self.last_avatar_message.embeds[0]
+                        # Extract the timestamp from the message
+                        msg_timestamp = int(self.last_avatar_message.created_at.timestamp())
+                        embed_username = embed.title
+                        # Handle empty/zero-width space descriptions
+                        embed_message = embed.description if embed.description else ""
+                        # Replace zero-width space with empty string for display
+                        if embed_message == "\u200b":
+                            embed_message = ""
                         
-                        # Skip messages from other bots or non-bot messages
-                        if message.author != self.user:
-                            continue
-                        
-                        # Check if this message has an avatar embed
-                        if message.embeds and len(message.embeds) > 0:
-                            embed = message.embeds[0]
-                            # Check if it's an avatar embed (has title and image)
-                            # Description might be empty, zero-width space, or actual text
-                            if embed.title and embed.image:
-                                # Extract the timestamp from the message
-                                msg_timestamp = int(message.created_at.timestamp())
-                                embed_username = embed.title
-                                # Handle empty/zero-width space descriptions
-                                embed_message = embed.description if embed.description else ""
-                                # Replace zero-width space with empty string for display
-                                if embed_message == "\u200b":
-                                    embed_message = ""
-                                
-                                # Format as plain message without avatar (handle empty messages)
-                                if embed_message:
-                                    formatted_plain = f"**{embed_username}**:\n{embed_message}\n-# <t:{msg_timestamp}:T>"
-                                else:
-                                    formatted_plain = f"**{embed_username}**:\n-# <t:{msg_timestamp}:T>"
-                                await message.edit(content=formatted_plain, embeds=[])
-                                converted_count += 1
-                                log_verbose(f"✏️ Converted avatar embed from {embed_username} to plain text")
-                    
-                    if converted_count > 0:
-                        log_verbose(f"✅ Converted {converted_count} avatar embed(s) to plain text")
-                    else:
-                        log_verbose(f"ℹ️ No previous avatar embeds found to convert")
-                        
+                        # Format as plain message without avatar (handle empty messages)
+                        if embed_message:
+                            formatted_plain = f"**{embed_username}**:\n{embed_message}\n-# <t:{msg_timestamp}:T>"
+                        else:
+                            formatted_plain = f"**{embed_username}**:\n-# <t:{msg_timestamp}:T>"
+                        await self.last_avatar_message.edit(content=formatted_plain, embeds=[])
+                        log_verbose(f"✏️ Converted last avatar embed from {embed_username} to plain text")
+                    self.last_avatar_message = None  # Clear after conversion
                 except Exception as e:
-                    log_verbose(f"⚠️ Failed to edit previous avatar embeds: {e}")
+                    log_verbose(f"⚠️ Failed to edit last avatar embed: {e}")
+                    self.last_avatar_message = None  # Clear on error
             
             # Now send the new message - ALWAYS send even if there are errors
             try:
@@ -1701,7 +1677,7 @@ class DiscordCourtBot(discord.Client):
                     from datetime import datetime, timezone
                     
                     avatar_embed = discord.Embed(
-                        title=username,
+                        title=f"{username}",
                         description=embed_description,
                         color=0x1e1e1e,
                         timestamp=datetime.fromtimestamp(unix_timestamp, tz=timezone.utc)
@@ -1728,6 +1704,13 @@ class DiscordCourtBot(discord.Client):
             self.last_discord_message = sent_message
             self.last_message_username = username
             self.last_message_pose_id = pose_id
+            
+            # Track the last avatar message for efficient editing (optimization)
+            if showing_new_avatar:
+                self.last_avatar_message = sent_message
+            else:
+                # Don't track plain text messages
+                pass
             
             # Log the message in simple format for non-verbose mode
             log_message("Chatroom", username, cleaned_message)
@@ -1989,7 +1972,7 @@ class ObjectionBot:
         self.username = config.get('objection', 'bot_username')
         self.connected = False
         self.user_id = None
-        self.message_queue = queue.Queue()
+        self.message_queue = asyncio.Queue()  # Changed to async queue
         self.discord_bot = None
         self.user_names = {}  # Changed from users to match existing code
         
@@ -2009,10 +1992,20 @@ class ObjectionBot:
         self.current_mods = set()  # Set of current moderator user IDs
         self.banned_users = []  # List of banned users (only available when admin)
         
-        # For Discord bridge compatibility
+        # For Discord bridge compatibility and message queueing
         self._username_change_event = asyncio.Event()
         self._pending_username = None
         self._pending_pair_request = None
+        self._message_lock = asyncio.Lock()  # Lock to prevent concurrent message sends
+        self._current_username = self.username  # Track current username
+        
+        # Advanced message queue system for high-performance relay
+        self._relay_queue = asyncio.Queue()  # Queue for Discord->Courtroom messages
+        self._queue_processor_task = None  # Background task processing the queue
+        self._last_queued_username = None  # Track last username to skip redundant changes
+        
+        # Pre-compile regex patterns for performance
+        self._mention_pattern = re.compile(r'<@\d+>')
     
     async def connect_to_room(self):
         """Connect to the courtroom WebSocket using raw websockets"""
@@ -2069,6 +2062,10 @@ class ObjectionBot:
                     
                     # Start the message processing loop only - let server handle ping/pong
                     asyncio.create_task(self.message_loop())
+                    
+                    # Start the relay queue processor for high-performance message relay
+                    self._queue_processor_task = asyncio.create_task(self._process_relay_queue())
+                    print("🚀 Started high-performance message queue processor")
                     
                     return True
                 else:
@@ -2331,7 +2328,7 @@ class ObjectionBot:
                 return
             
             # Ignore messages with Discord user mentions (<@numbers>)
-            if re.search(r'<@\d+>', text):
+            if self._mention_pattern.search(text):
                 log_verbose(f"🚫 Ignoring objection.lol message with user mention: {text[:50]}...")
                 return
             
@@ -2734,36 +2731,75 @@ class ObjectionBot:
             print(f"[MOD] Failed to update moderators: {e}")
             return False
     
-    async def change_username_and_wait(self, new_username, timeout=2.0):
-        """Change the bot's username using WebSocket"""
-        log_verbose(f"[DEBUG] Requesting username change to: {new_username}")
+    async def _process_relay_queue(self):
+        """
+        High-performance message queue processor.
+        Processes Discord->Courtroom messages with intelligent username change batching.
+        """
+        print("📋 Message queue processor started")
+        
+        while self.connected:
+            try:
+                # Get the next message from the queue (blocks until available)
+                queue_item = await self._relay_queue.get()
+                
+                # Check for shutdown signal
+                if queue_item is None:
+                    print("📋 Queue processor received shutdown signal")
+                    break
+                
+                username, message_text, character_id, pose_id = queue_item
+                
+                # Use lock to ensure the entire sequence is atomic
+                async with self._message_lock:
+                    # Only change username if it's different from the last one
+                    # This optimization skips username changes when same user sends multiple messages
+                    if username != self._last_queued_username:
+                        log_verbose(f"[QUEUE] Username change needed: {self._last_queued_username} → {username}")
+                        success = await self._send_username_change(username)
+                        if not success:
+                            log_verbose(f"[QUEUE] Failed to change username, skipping message")
+                            self._relay_queue.task_done()
+                            continue
+                        self._last_queued_username = username
+                    else:
+                        # Same user - skip username change but still add delay for server processing
+                        log_verbose(f"[QUEUE] Username unchanged ({username}), skipping username change")
+                        await asyncio.sleep(0.08)  # Small delay for server processing
+                    
+                    # Send the message with rate limit protection
+                    # Courtroom has 1 message per second rate limit per user account
+                    success = await self._send_message_internal(message_text, character_id, pose_id, enforce_rate_limit=True)
+                
+                if success:
+                    log_verbose(f"[QUEUE] ✓ Sent: {username}: {message_text[:50]}...")
+                else:
+                    log_verbose(f"[QUEUE] ✗ Failed to send message from {username}")
+                
+                # Mark task as done
+                self._relay_queue.task_done()
+                
+            except asyncio.CancelledError:
+                print("📋 Queue processor cancelled")
+                break
+            except Exception as e:
+                print(f"❌ Error in queue processor: {e}")
+                # Don't break - continue processing
+        
+        print("📋 Message queue processor stopped")
+    
+    async def _send_username_change(self, new_username):
+        """Internal method to change username (used by queue processor)"""
+        # No lock needed - queue processor ensures sequential execution
+        # Skip if username is already current
+        if self._current_username == new_username:
+            log_verbose(f"[DEBUG] Username already set to {new_username}, skipping change")
+            return True
         
         # Check if WebSocket is still connected
-        if not self.connected:
-            log_verbose("❌ Cannot change username - Bot marked as disconnected")
-            # Trigger auto-reconnect if not already in progress
-            if self.auto_reconnect:
-                await self.start_auto_reconnect()
+        if not self.connected or not self.websocket or self.websocket.close_code is not None:
+            log_verbose("❌ Cannot change username - not connected")
             return False
-            
-        if not self.websocket:
-            print("❌ Cannot change username - WebSocket is None")
-            self.connected = False
-            # Trigger auto-reconnect if not already in progress
-            if self.auto_reconnect:
-                await self.start_auto_reconnect()
-            return False
-            
-        if self.websocket.close_code is not None:
-            print(f"❌ Cannot change username - WebSocket closed with code {self.websocket.close_code}")
-            self.connected = False
-            # Trigger auto-reconnect if not already in progress
-            if self.auto_reconnect:
-                await self.start_auto_reconnect()
-            return False
-            
-        self._pending_username = new_username
-        self._username_change_event.clear()
         
         try:
             # Send username change via WebSocket
@@ -2771,16 +2807,120 @@ class ObjectionBot:
             message = f'42["change_username",{json.dumps(message_data)}]'
             await self.websocket.send(message)
             
-            # No waiting or timeout, return immediately for compatibility
-            self._pending_username = None
+            # Username changes are also subject to the 1-second rate limit
+            # Wait for both propagation AND rate limit
+            await asyncio.sleep(1.0)
+            
+            # Update current username tracking
+            self._current_username = new_username
             return True
         except Exception as e:
-            print(f"❌ Username change failed: {e}")
-            self.connected = False
-            # Trigger auto-reconnect if not already in progress
-            if self.auto_reconnect:
-                await self.start_auto_reconnect()
+            log_verbose(f"❌ Username change failed: {e}")
             return False
+    
+    async def _send_message_internal(self, text, character_id=None, pose_id=None, enforce_rate_limit=False):
+        """Internal method to send message (used by queue processor)"""
+        # No lock needed - queue processor ensures sequential execution
+        if not self.connected or not self.websocket or self.websocket.close_code is not None:
+            return False
+        
+        # Use provided character/pose or fall back to config defaults
+        char_id = character_id if character_id is not None else self.config.get('settings', 'character_id')
+        p_id = pose_id if pose_id is not None else self.config.get('settings', 'pose_id')
+        message_data = {
+            "characterId": char_id,
+            "poseId": p_id,
+            "text": text
+        }
+        
+        try:
+            message = f'42["message",{json.dumps(message_data)}]'
+            await self.websocket.send(message)
+            
+            # Courtroom enforces 1 message per second rate limit per user account
+            # For queued Discord messages, we must respect this 1-second limit
+            # For direct bot messages (pairing, etc), use minimal delay
+            if enforce_rate_limit:
+                await asyncio.sleep(1.0)  # 1 second rate limit for courtroom
+            else:
+                await asyncio.sleep(0.05)  # Minimal delay for direct messages
+            return True
+        except Exception as e:
+            log_verbose(f"❌ Send failed: {e}")
+            return False
+    
+    async def queue_message(self, username, message_text, character_id=None, pose_id=None):
+        """
+        Queue a message for high-performance relay.
+        Messages are processed in order by the background queue processor.
+        """
+        try:
+            await self._relay_queue.put((username, message_text, character_id, pose_id))
+            log_verbose(f"[QUEUE] Queued message from {username} (queue size: {self._relay_queue.qsize()})")
+            return True
+        except Exception as e:
+            print(f"❌ Failed to queue message: {e}")
+            return False
+    
+    async def change_username_and_wait(self, new_username, timeout=2.0):
+        """Change the bot's username using WebSocket with proper locking"""
+        # Use lock to ensure username changes happen sequentially
+        async with self._message_lock:
+            log_verbose(f"[DEBUG] Requesting username change to: {new_username}")
+            
+            # Skip if username is already current
+            if self._current_username == new_username:
+                log_verbose(f"[DEBUG] Username already set to {new_username}, skipping change")
+                return True
+            
+            # Check if WebSocket is still connected
+            if not self.connected:
+                log_verbose("❌ Cannot change username - Bot marked as disconnected")
+                # Trigger auto-reconnect if not already in progress
+                if self.auto_reconnect:
+                    await self.start_auto_reconnect()
+                return False
+                
+            if not self.websocket:
+                print("❌ Cannot change username - WebSocket is None")
+                self.connected = False
+                # Trigger auto-reconnect if not already in progress
+                if self.auto_reconnect:
+                    await self.start_auto_reconnect()
+                return False
+                
+            if self.websocket.close_code is not None:
+                print(f"❌ Cannot change username - WebSocket closed with code {self.websocket.close_code}")
+                self.connected = False
+                # Trigger auto-reconnect if not already in progress
+                if self.auto_reconnect:
+                    await self.start_auto_reconnect()
+                return False
+                
+            self._pending_username = new_username
+            self._username_change_event.clear()
+            
+            try:
+                # Send username change via WebSocket
+                message_data = {"username": new_username}
+                message = f'42["change_username",{json.dumps(message_data)}]'
+                await self.websocket.send(message)
+                
+                # Reduced delay for faster username propagation (was 0.15s)
+                # This is still safe but improves message throughput
+                await asyncio.sleep(0.08)
+                
+                # Update current username tracking
+                self._current_username = new_username
+                self._pending_username = None
+                return True
+            except Exception as e:
+                print(f"❌ Username change failed: {e}")
+                self.connected = False
+                # Trigger auto-reconnect if not already in progress
+                if self.auto_reconnect:
+                    await self.start_auto_reconnect()
+                return False
     
     def set_discord_bot(self, discord_bot):
         """Link the Discord bot"""
@@ -2819,6 +2959,21 @@ class ObjectionBot:
     async def graceful_disconnect(self):
         """Gracefully disconnect: clean up Discord, update room, disconnect socket."""
         print("🔄 Starting graceful disconnect...")
+        
+        # Stop the queue processor first
+        if self._queue_processor_task and not self._queue_processor_task.done():
+            print("🛑 Stopping message queue processor...")
+            await self._relay_queue.put(None)  # Send shutdown signal
+            try:
+                await asyncio.wait_for(self._queue_processor_task, timeout=5.0)
+                print("✅ Queue processor stopped")
+            except asyncio.TimeoutError:
+                print("⚠️ Queue processor did not stop gracefully, cancelling...")
+                self._queue_processor_task.cancel()
+                try:
+                    await self._queue_processor_task
+                except asyncio.CancelledError:
+                    pass
         
         # Cancel auto-reconnect if in progress
         self.auto_reconnect = False
@@ -2862,46 +3017,51 @@ class ObjectionBot:
     
     async def send_message(self, text, character_id=None, pose_id=None):
         """Send a message to the chatroom with optional character/pose override"""
-        if not self.connected:
-            print("❌ Not connected - cannot send message")
-            # Trigger auto-reconnect if not already in progress
-            if self.auto_reconnect:
-                await self.start_auto_reconnect()
-            return False
-            
-        # Check if socket is actually connected before sending
-        if not self.websocket or self.websocket.close_code is not None:
-            print("❌ WebSocket connection lost - cannot send message")
-            self.connected = False
-            # Trigger auto-reconnect if not already in progress
-            if self.auto_reconnect:
-                await self.start_auto_reconnect()
-            return False
-            
-        # Use provided character/pose or fall back to config defaults
-        char_id = character_id if character_id is not None else self.config.get('settings', 'character_id')
-        p_id = pose_id if pose_id is not None else self.config.get('settings', 'pose_id')
-        message_data = {
-            "characterId": char_id,
-            "poseId": p_id,
-            "text": text
-        }
-        
-        try:
-            message = f'42["message",{json.dumps(message_data)}]'
-            await self.websocket.send(message)
-            log_verbose(f"📤 Sent: {text}")
-            return True
-        except Exception as e:
-            print(f"❌ Send failed: {e}")
-            # If send fails, it indicates connection issues
-            if "closed" in str(e).lower() or "disconnected" in str(e).lower():
-                print("🔗 Send failure suggests connection loss - marking as disconnected")
+        # Use lock to ensure messages are sent sequentially
+        async with self._message_lock:
+            if not self.connected:
+                print("❌ Not connected - cannot send message")
+                # Trigger auto-reconnect if not already in progress
+                if self.auto_reconnect:
+                    await self.start_auto_reconnect()
+                return False
+                
+            # Check if socket is actually connected before sending
+            if not self.websocket or self.websocket.close_code is not None:
+                print("❌ WebSocket connection lost - cannot send message")
                 self.connected = False
                 # Trigger auto-reconnect if not already in progress
                 if self.auto_reconnect:
                     await self.start_auto_reconnect()
-            return False
+                return False
+                
+            # Use provided character/pose or fall back to config defaults
+            char_id = character_id if character_id is not None else self.config.get('settings', 'character_id')
+            p_id = pose_id if pose_id is not None else self.config.get('settings', 'pose_id')
+            message_data = {
+                "characterId": char_id,
+                "poseId": p_id,
+                "text": text
+            }
+            
+            try:
+                message = f'42["message",{json.dumps(message_data)}]'
+                await self.websocket.send(message)
+                log_verbose(f"📤 Sent: {text}")
+                # Reduced delay for faster message throughput (was 0.1s)
+                # Still prevents rate limiting but improves responsiveness
+                await asyncio.sleep(0.05)
+                return True
+            except Exception as e:
+                print(f"❌ Send failed: {e}")
+                # If send fails, it indicates connection issues
+                if "closed" in str(e).lower() or "disconnected" in str(e).lower():
+                    print("🔗 Send failure suggests connection loss - marking as disconnected")
+                    self.connected = False
+                    # Trigger auto-reconnect if not already in progress
+                    if self.auto_reconnect:
+                        await self.start_auto_reconnect()
+                return False
     def start_input_thread(self):
         """Start a thread to handle console input"""
         def input_worker():
@@ -3329,7 +3489,10 @@ async def terminal_command_listener(objection_bot, discord_bot):
                 print(f"   User ID: {objection_bot.user_id}")
                 print(f"   Pending Username: {objection_bot._pending_username}")
                 print(f"   Pending Pair Request: {bool(objection_bot._pending_pair_request)}")
-                print(f"   Message Queue Size: {objection_bot.message_queue.qsize()}")
+                print(f"   Terminal Queue Size: {objection_bot.message_queue.qsize()}")
+                print(f"   Relay Queue Size: {objection_bot._relay_queue.qsize()} (Discord→Courtroom)")
+                print(f"   Last Queued Username: {objection_bot._last_queued_username}")
+                print(f"   Queue Processor Running: {objection_bot._queue_processor_task and not objection_bot._queue_processor_task.done()}")
                 print(f"   Discord Nicknames: {len(discord_bot.nicknames)} users")
                 print(f"   Discord Colors: {len(discord_bot.colors)} users")
                 if objection_bot.reconnect_task:
