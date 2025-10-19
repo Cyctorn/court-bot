@@ -2763,13 +2763,13 @@ class ObjectionBot:
                             continue
                         self._last_queued_username = username
                     else:
-                        # Same user - add a small delay to prevent server overload
-                        # This is necessary because server needs time even without username change
-                        log_verbose(f"[QUEUE] Username unchanged ({username}), adding short delay")
-                        await asyncio.sleep(0.08)  # Match username change delay for consistency
+                        # Same user - skip username change but still add delay for server processing
+                        log_verbose(f"[QUEUE] Username unchanged ({username}), skipping username change")
+                        await asyncio.sleep(0.08)  # Small delay for server processing
                     
-                    # Send the message
-                    success = await self._send_message_internal(message_text, character_id, pose_id)
+                    # Send the message with rate limit protection
+                    # Courtroom has 1 message per second rate limit per user account
+                    success = await self._send_message_internal(message_text, character_id, pose_id, enforce_rate_limit=True)
                 
                 if success:
                     log_verbose(f"[QUEUE] ✓ Sent: {username}: {message_text[:50]}...")
@@ -2807,8 +2807,9 @@ class ObjectionBot:
             message = f'42["change_username",{json.dumps(message_data)}]'
             await self.websocket.send(message)
             
-            # Minimal delay for username propagation (optimized)
-            await asyncio.sleep(0.08)
+            # Username changes are also subject to the 1-second rate limit
+            # Wait for both propagation AND rate limit
+            await asyncio.sleep(1.0)
             
             # Update current username tracking
             self._current_username = new_username
@@ -2817,7 +2818,7 @@ class ObjectionBot:
             log_verbose(f"❌ Username change failed: {e}")
             return False
     
-    async def _send_message_internal(self, text, character_id=None, pose_id=None):
+    async def _send_message_internal(self, text, character_id=None, pose_id=None, enforce_rate_limit=False):
         """Internal method to send message (used by queue processor)"""
         # No lock needed - queue processor ensures sequential execution
         if not self.connected or not self.websocket or self.websocket.close_code is not None:
@@ -2835,8 +2836,14 @@ class ObjectionBot:
         try:
             message = f'42["message",{json.dumps(message_data)}]'
             await self.websocket.send(message)
-            # Minimal delay to prevent rate limiting (optimized)
-            await asyncio.sleep(0.05)
+            
+            # Courtroom enforces 1 message per second rate limit per user account
+            # For queued Discord messages, we must respect this 1-second limit
+            # For direct bot messages (pairing, etc), use minimal delay
+            if enforce_rate_limit:
+                await asyncio.sleep(1.0)  # 1 second rate limit for courtroom
+            else:
+                await asyncio.sleep(0.05)  # Minimal delay for direct messages
             return True
         except Exception as e:
             log_verbose(f"❌ Send failed: {e}")
