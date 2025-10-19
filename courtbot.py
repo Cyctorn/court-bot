@@ -1673,14 +1673,13 @@ class DiscordCourtBot(discord.Client):
                     # Use a zero-width space if message is empty to ensure embed has a description
                     embed_description = cleaned_message if cleaned_message and cleaned_message.strip() else "\u200b"
                     
-                    # Use Discord's timestamp format for user-relative time display
-                    from datetime import datetime, timezone
+                    # Add timestamp in the description for consistent formatting with plain messages
+                    embed_description_with_time = f"{embed_description}\n-# <t:{unix_timestamp}:T>"
                     
                     avatar_embed = discord.Embed(
                         title=f"{username}:",
-                        description=embed_description,
-                        color=0x1e1e1e,
-                        timestamp=datetime.fromtimestamp(unix_timestamp, tz=timezone.utc)
+                        description=embed_description_with_time,
+                        color=0x1e1e1e
                     )
                     avatar_embed.set_image(url=avatar_url)
                     sent_message = await self.bridge_channel.send(embed=avatar_embed)
