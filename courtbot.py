@@ -1679,9 +1679,8 @@ class DiscordCourtBot(discord.Client):
                         color=0x1e1e1e
                     )
                     avatar_embed.set_image(url=avatar_url)
-                    # Set timestamp in footer for consistent formatting with plain messages
-                    from datetime import datetime, timezone
-                    avatar_embed.set_footer(text=datetime.fromtimestamp(unix_timestamp, tz=timezone.utc).strftime('%I:%M:%S %p'))
+                    # Set timestamp in footer using Discord's dynamic timestamp for user's local time
+                    avatar_embed.set_footer(text=f"<t:{unix_timestamp}:T>")
                     sent_message = await self.bridge_channel.send(embed=avatar_embed)
                     log_verbose(f"🖼️ Sent message as embed with avatar (user_changed={user_changed}, pose_changed={pose_changed})")
                 else:
