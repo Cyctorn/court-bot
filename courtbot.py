@@ -1673,17 +1673,15 @@ class DiscordCourtBot(discord.Client):
                     # Use a zero-width space if message is empty to ensure embed has a description
                     embed_description = cleaned_message if cleaned_message and cleaned_message.strip() else "\u200b"
                     
+                    # Add timestamp in the description for consistent formatting with plain messages
+                    embed_description_with_time = f"{embed_description}\n-# <t:{unix_timestamp}:T>"
+                    
                     avatar_embed = discord.Embed(
                         title=f"{username}:",
-                        description=embed_description,
+                        description=embed_description_with_time,
                         color=0x1e1e1e
                     )
                     avatar_embed.set_image(url=avatar_url)
-                    # Set timestamp in footer - Discord markdown doesn't work in footers, so format manually
-                    # This will show in UTC but that's the best we can do in embed footers
-                    from datetime import datetime, timezone
-                    time_str = datetime.fromtimestamp(unix_timestamp, tz=timezone.utc).strftime('%I:%M:%S %p UTC')
-                    avatar_embed.set_footer(text=time_str)
                     sent_message = await self.bridge_channel.send(embed=avatar_embed)
                     log_verbose(f"🖼️ Sent message as embed with avatar (user_changed={user_changed}, pose_changed={pose_changed})")
                 else:
