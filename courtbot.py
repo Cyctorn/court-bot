@@ -513,16 +513,36 @@ class DiscordCourtBot(discord.Client):
         """Called when the bot is starting up"""
         # Add commands to tree
         await self.add_commands()
-        # Sync slash commands to the guild
+        # Sync slash commands ONLY to the specific guild (not globally)
         guild = discord.Object(id=self.guild_id)
-        self.tree.copy_global_to(guild=guild)
-        await self.tree.sync(guild=guild)
-        print("🔄 Slash commands synced!")
+        
+        # Clear global commands to remove any previously registered ones
+        self.tree.clear_commands(guild=None)  # Clear local cache of global commands
+        await self.tree.sync(guild=None)  # Sync the empty global command list to Discord
+        print("🧹 Cleared global commands")
+        
+        # Now sync only to this specific guild
+        await self.tree.sync(guild=guild)  # Sync only to this specific guild
+        print(f"🔄 Slash commands synced to guild {self.guild_id}!")
+    
     async def add_commands(self):
         """Add all slash commands to the tree"""
-        @self.tree.command(name="status", description="Check bridge status and list users in the courtroom")
+        
+        def check_guild_and_channel(interaction: discord.Interaction) -> bool:
+            """Check if command is used in the correct guild and channel"""
+            if interaction.guild_id != self.guild_id:
+                return False
+            if interaction.channel_id != self.channel_id:
+                return False
+            return True
+        
+        @self.tree.command(name="status", description="Check bridge status and list users in the courtroom", guild=discord.Object(id=self.guild_id))
         async def status(interaction: discord.Interaction):
             """Check bot status and list users"""
+            if not check_guild_and_channel(interaction):
+                await interaction.response.send_message("❌ This command can only be used in the configured bridge channel.", ephemeral=True)
+                return
+            
             await interaction.response.defer(ephemeral=False)
             
             # Refresh room data before showing status if connected
@@ -577,9 +597,13 @@ class DiscordCourtBot(discord.Client):
                 )
 
             await interaction.followup.send(embed=embed, ephemeral=False)
-        @self.tree.command(name="reconnect", description="Attempt to reconnect to the objection.lol courtroom")
+        @self.tree.command(name="reconnect", description="Attempt to reconnect to the objection.lol courtroom", guild=discord.Object(id=self.guild_id))
         async def reconnect(interaction: discord.Interaction):
             """Reconnect to objection.lol"""
+            if not check_guild_and_channel(interaction):
+                await interaction.response.send_message("❌ This command can only be used in the configured bridge channel.", ephemeral=True)
+                return
+            
             await interaction.response.defer(ephemeral=True)
             
             # Disconnect if already connected
@@ -652,9 +676,13 @@ class DiscordCourtBot(discord.Client):
                     color=0xff0000
                 )
                 await interaction.followup.send(embed=embed, ephemeral=True)
-        @self.tree.command(name="help", description="Show help information")
+        @self.tree.command(name="help", description="Show help information", guild=discord.Object(id=self.guild_id))
         async def help_command(interaction: discord.Interaction):
             """Show help information"""
+            if not check_guild_and_channel(interaction):
+                await interaction.response.send_message("❌ This command can only be used in the configured bridge channel.", ephemeral=True)
+                return
+            
             embed = discord.Embed(
                 title="🤖 CourtBot Help",
                 description="Discord bridge for Objection.lol courtrooms",
@@ -691,9 +719,13 @@ class DiscordCourtBot(discord.Client):
                 inline=False
             )
             await interaction.response.send_message(embed=embed, ephemeral=True)
-        @self.tree.command(name="nickname", description="Set your bridge nickname for the dog ('reset' to remove)")
+        @self.tree.command(name="nickname", description="Set your bridge nickname for the dog ('reset' to remove)", guild=discord.Object(id=self.guild_id))
         @app_commands.describe(nickname="Nickname when relaying (use 'reset' to remove)")
         async def nickname_command(interaction: discord.Interaction, nickname: str):
+            if not check_guild_and_channel(interaction):
+                await interaction.response.send_message("❌ This command can only be used in the configured bridge channel.", ephemeral=True)
+                return
+            
             user_id = str(interaction.user.id)
 
             # Handle reset/removal
@@ -713,9 +745,13 @@ class DiscordCourtBot(discord.Client):
             self.nicknames[user_id] = nickname
             save_nicknames(self.nicknames)
             await interaction.response.send_message(f"✅ Your bridge nickname is now set to: **{nickname}**\nUse `/nickname reset` to remove it.", ephemeral=True)
-        @self.tree.command(name="color", description="Set your message color for the courtroom ('reset' to remove)")
+        @self.tree.command(name="color", description="Set your message color for the courtroom ('reset' to remove)", guild=discord.Object(id=self.guild_id))
         @app_commands.describe(color="Hex color code like 'ff0000' or '#ff0000', preset name like 'red', or 'reset' to remove")
         async def color_command(interaction: discord.Interaction, color: str):
+            if not check_guild_and_channel(interaction):
+                await interaction.response.send_message("❌ This command can only be used in the configured bridge channel.", ephemeral=True)
+                return
+            
             user_id = str(interaction.user.id)
 
             # Handle reset/removal
@@ -749,12 +785,16 @@ class DiscordCourtBot(discord.Client):
             save_colors(self.colors)
             await interaction.response.send_message(f"✅ Your message color is now set to: **#{clean_color.upper()}**\nYour messages will appear in color in the courtroom. Use `/color reset` to remove it.", ephemeral=True)
         
-        @self.tree.command(name="character", description="Set your character and pose for the courtroom ('reset' to remove)")
+        @self.tree.command(name="character", description="Set your character and pose for the courtroom ('reset' to remove)", guild=discord.Object(id=self.guild_id))
         @app_commands.describe(
             character_id="Character ID (e.g., 408757) or 'reset' to remove",
             pose_id="Pose ID (e.g., 4998989) - required if setting character"
         )
         async def character_command(interaction: discord.Interaction, character_id: str, pose_id: str = None):
+            if not check_guild_and_channel(interaction):
+                await interaction.response.send_message("❌ This command can only be used in the configured bridge channel.", ephemeral=True)
+                return
+            
             user_id = str(interaction.user.id)
 
             # Handle reset/removal
@@ -791,7 +831,7 @@ class DiscordCourtBot(discord.Client):
                 ephemeral=True
             )
 
-        @self.tree.command(name="avatars", description="Toggle character avatar display in Discord")
+        @self.tree.command(name="avatars", description="Toggle character avatar display in Discord", guild=discord.Object(id=self.guild_id))
         @app_commands.describe(enabled="Enable or disable avatar display")
         @app_commands.choices(enabled=[
             app_commands.Choice(name="Enable", value="enable"),
@@ -799,6 +839,10 @@ class DiscordCourtBot(discord.Client):
         ])
         async def avatars_command(interaction: discord.Interaction, enabled: app_commands.Choice[str]):
             """Toggle avatar display"""
+            if not check_guild_and_channel(interaction):
+                await interaction.response.send_message("❌ This command can only be used in the configured bridge channel.", ephemeral=True)
+                return
+            
             if enabled.value == "enable":
                 self.show_avatars = True
                 status_emoji = "✅"
@@ -843,9 +887,13 @@ class DiscordCourtBot(discord.Client):
             await interaction.response.send_message(embed=embed, ephemeral=False)
             print(f"[AVATARS] Avatar display {status_text} by {interaction.user.display_name}")
 
-        @self.tree.command(name="shaba")
+        @self.tree.command(name="shaba", guild=discord.Object(id=self.guild_id))
         async def shaba_command(interaction: discord.Interaction):
             """Shaba command"""
+            if not check_guild_and_channel(interaction):
+                await interaction.response.send_message("❌ This command can only be used in the configured bridge channel.", ephemeral=True)
+                return
+            
             await interaction.response.defer(ephemeral=True)
 
             if not self.objection_bot.connected:
@@ -866,10 +914,14 @@ class DiscordCourtBot(discord.Client):
                 await interaction.followup.send(f"❌ Failed to execute shaba command: {str(e)}", ephemeral=True)
 
         # Admin Commands Section
-        @self.tree.command(name="titlebar", description="Change the chatroom title (admin only)")
+        @self.tree.command(name="titlebar", description="Change the chatroom title (admin only)", guild=discord.Object(id=self.guild_id))
         @app_commands.describe(title="New title for the chatroom (1-150 characters)")
         async def titlebar_command(interaction: discord.Interaction, title: str):
             """Change chatroom title (admin only)"""
+            if not check_guild_and_channel(interaction):
+                await interaction.response.send_message("❌ This command can only be used in the configured bridge channel.", ephemeral=True)
+                return
+            
             await interaction.response.defer(ephemeral=False)
 
             if not self.objection_bot.connected:
@@ -904,10 +956,14 @@ class DiscordCourtBot(discord.Client):
                 print(f"❌ Title command error: {e}")
                 await interaction.followup.send(f"❌ Failed to change title: {str(e)}", ephemeral=False)
 
-        @self.tree.command(name="slowmode", description="Set room slow mode (admin only, requires 3 confirmations)")
+        @self.tree.command(name="slowmode", description="Set room slow mode (admin only, requires 3 confirmations)", guild=discord.Object(id=self.guild_id))
         @app_commands.describe(seconds="Slow mode seconds (0-60, 0 = disabled)")
         async def slowmode_command(interaction: discord.Interaction, seconds: int):
             """Set room slow mode (admin only, requires confirmations)"""
+            if not check_guild_and_channel(interaction):
+                await interaction.response.send_message("❌ This command can only be used in the configured bridge channel.", ephemeral=True)
+                return
+            
             await interaction.response.defer(ephemeral=True)
 
             if not self.objection_bot.connected:
@@ -994,10 +1050,14 @@ class DiscordCourtBot(discord.Client):
                 )
                 await message.edit(embed=timeout_embed)
 
-        @self.tree.command(name="setpassword", description="Set or remove room password (admin only, requires 3 confirmations)")
+        @self.tree.command(name="setpassword", description="Set or remove room password (admin only, requires 3 confirmations)", guild=discord.Object(id=self.guild_id))
         @app_commands.describe(password="Password to set (leave blank to remove password)")
         async def setpassword_command(interaction: discord.Interaction, password: str = ""):
             """Set or remove room password (admin only, requires confirmations)"""
+            if not check_guild_and_channel(interaction):
+                await interaction.response.send_message("❌ This command can only be used in the configured bridge channel.", ephemeral=True)
+                return
+            
             await interaction.response.defer(ephemeral=True)
 
             if not self.objection_bot.connected:
@@ -1083,10 +1143,14 @@ class DiscordCourtBot(discord.Client):
                 )
                 await message.edit(embed=timeout_embed)
 
-        @self.tree.command(name="text", description="Change the chatroom textbox appearance (admin only)")
+        @self.tree.command(name="text", description="Change the chatroom textbox appearance (admin only)", guild=discord.Object(id=self.guild_id))
         @app_commands.describe(style="Textbox style (preset name or custom ID)")
         async def text_command(interaction: discord.Interaction, style: str):
             """Change chatroom textbox appearance (admin only)"""
+            if not check_guild_and_channel(interaction):
+                await interaction.response.send_message("❌ This command can only be used in the configured bridge channel.", ephemeral=True)
+                return
+            
             await interaction.response.defer(ephemeral=False)
 
             if not self.objection_bot.connected:
@@ -1129,7 +1193,7 @@ class DiscordCourtBot(discord.Client):
                 print(f"❌ Textbox command error: {e}")
                 await interaction.followup.send(f"❌ Failed to change textbox: {str(e)}", ephemeral=False)
 
-        @self.tree.command(name="aspect", description="Change the chatroom aspect ratio (admin only)")
+        @self.tree.command(name="aspect", description="Change the chatroom aspect ratio (admin only)", guild=discord.Object(id=self.guild_id))
         @app_commands.describe(ratio="Aspect ratio (3:2, 4:3, 16:9, 16:10)")
         @app_commands.choices(ratio=[
             app_commands.Choice(name="3:2", value="3:2"),
@@ -1139,6 +1203,10 @@ class DiscordCourtBot(discord.Client):
         ])
         async def aspect_command(interaction: discord.Interaction, ratio: app_commands.Choice[str]):
             """Change chatroom aspect ratio (admin only)"""
+            if not check_guild_and_channel(interaction):
+                await interaction.response.send_message("❌ This command can only be used in the configured bridge channel.", ephemeral=True)
+                return
+            
             await interaction.response.defer(ephemeral=False)
 
             if not self.objection_bot.connected:
@@ -1165,7 +1233,7 @@ class DiscordCourtBot(discord.Client):
                 print(f"❌ Aspect ratio command error: {e}")
                 await interaction.followup.send(f"❌ Failed to change aspect ratio: {str(e)}", ephemeral=False)
 
-        @self.tree.command(name="spectating", description="Enable or disable spectating in the courtroom (admin only)")
+        @self.tree.command(name="spectating", description="Enable or disable spectating in the courtroom (admin only)", guild=discord.Object(id=self.guild_id))
         @app_commands.describe(enabled="Whether spectating should be enabled")
         @app_commands.choices(enabled=[
             app_commands.Choice(name="Enable", value="true"),
@@ -1173,6 +1241,10 @@ class DiscordCourtBot(discord.Client):
         ])
         async def spectating_command(interaction: discord.Interaction, enabled: app_commands.Choice[str]):
             """Enable or disable spectating (admin only)"""
+            if not check_guild_and_channel(interaction):
+                await interaction.response.send_message("❌ This command can only be used in the configured bridge channel.", ephemeral=True)
+                return
+            
             await interaction.response.defer(ephemeral=False)
             
             if not self.objection_bot.connected:
@@ -1202,9 +1274,13 @@ class DiscordCourtBot(discord.Client):
                 print(f"❌ Spectating command error: {e}")
                 await interaction.followup.send(f"❌ Failed to change spectating settings: {str(e)}", ephemeral=False)
 
-        @self.tree.command(name="bans", description="Show list of banned users in the courtroom")
+        @self.tree.command(name="bans", description="Show list of banned users in the courtroom", guild=discord.Object(id=self.guild_id))
         async def bans_command(interaction: discord.Interaction):
             """Show list of banned users"""
+            if not check_guild_and_channel(interaction):
+                await interaction.response.send_message("❌ This command can only be used in the configured bridge channel.", ephemeral=True)
+                return
+            
             await interaction.response.defer(ephemeral=False)
             
             if not self.objection_bot.connected:
@@ -1611,13 +1687,18 @@ class DiscordCourtBot(discord.Client):
                     # Create embed with avatar at top, then username and message below
                     # Use a zero-width space if message is empty to ensure embed has a description
                     embed_description = cleaned_message if cleaned_message and cleaned_message.strip() else "\u200b"
+                    
+                    # Format timestamp as "5:38:35 PM" style
+                    from datetime import datetime
+                    timestamp_str = datetime.fromtimestamp(unix_timestamp).strftime("%I:%M:%S %p")
+                    
                     avatar_embed = discord.Embed(
                         title=username,
                         description=embed_description,
-                        color=0x1e1e1e,
-                        timestamp=datetime.fromtimestamp(unix_timestamp, tz=timezone.utc)
+                        color=0x1e1e1e
                     )
                     avatar_embed.set_image(url=avatar_url)
+                    avatar_embed.set_footer(text=timestamp_str)
                     sent_message = await self.bridge_channel.send(embed=avatar_embed)
                     log_verbose(f"🖼️ Sent message as embed with avatar (user_changed={user_changed}, pose_changed={pose_changed})")
                 else:
