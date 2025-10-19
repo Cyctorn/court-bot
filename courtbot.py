@@ -285,9 +285,9 @@ class DiscordCourtBot(discord.Client):
         self.last_avatar_message = None  # Track the last avatar message for efficient editing
         
         # Load persistent data for nickname, color, and character customization
-        self.nicknames = self.load_nicknames()
-        self.colors = self.load_colors()
-        self.characters = self.load_characters()
+        self.nicknames = load_nicknames()
+        self.colors = load_colors()
+        self.characters = load_characters()
         
         # Pre-compile regex patterns for performance
         self._mention_pattern = re.compile(r'<@\d+>')
