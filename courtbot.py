@@ -511,18 +511,19 @@ class DiscordCourtBot(discord.Client):
         self.tree = app_commands.CommandTree(self)
     async def setup_hook(self):
         """Called when the bot is starting up"""
-        # Add commands to tree
-        await self.add_commands()
         # Sync slash commands ONLY to the specific guild (not globally)
         guild = discord.Object(id=self.guild_id)
         
-        # Clear global commands to remove any previously registered ones
+        # Clear global commands FIRST to remove any previously registered ones
         self.tree.clear_commands(guild=None)  # Clear local cache of global commands
         await self.tree.sync(guild=None)  # Sync the empty global command list to Discord
         print("🧹 Cleared global commands")
         
-        # Now sync only to this specific guild
-        await self.tree.sync(guild=guild)  # Sync only to this specific guild
+        # Now add guild-specific commands to tree
+        await self.add_commands()
+        
+        # Finally sync only to this specific guild
+        await self.tree.sync(guild=guild)
         print(f"🔄 Slash commands synced to guild {self.guild_id}!")
     
     async def add_commands(self):
@@ -539,7 +540,10 @@ class DiscordCourtBot(discord.Client):
         @self.tree.command(name="status", description="Check bridge status and list users in the courtroom", guild=discord.Object(id=self.guild_id))
         async def status(interaction: discord.Interaction):
             """Check bot status and list users"""
+            print(f"[STATUS_DEBUG] Received status command - Guild: {interaction.guild_id}, Expected: {self.guild_id}, Room: {self.objection_bot.room_id}")
+            
             if not check_guild_and_channel(interaction):
+                print(f"[STATUS_DEBUG] Rejecting - wrong guild or channel")
                 await interaction.response.send_message("❌ This command can only be used in the configured bridge channel.", ephemeral=True)
                 return
             
@@ -1203,10 +1207,15 @@ class DiscordCourtBot(discord.Client):
         ])
         async def aspect_command(interaction: discord.Interaction, ratio: app_commands.Choice[str]):
             """Change chatroom aspect ratio (admin only)"""
+            # Debug: Log all aspect command attempts
+            print(f"[ASPECT_DEBUG] Received aspect command - Guild: {interaction.guild_id}, Channel: {interaction.channel_id}, Expected Guild: {self.guild_id}, Expected Channel: {self.channel_id}, Room ID: {self.objection_bot.room_id}")
+            
             if not check_guild_and_channel(interaction):
+                print(f"[ASPECT_DEBUG] Rejecting command - wrong guild or channel")
                 await interaction.response.send_message("❌ This command can only be used in the configured bridge channel.", ephemeral=True)
                 return
             
+            print(f"[ASPECT_DEBUG] Processing aspect command for room {self.objection_bot.room_id}")
             await interaction.response.defer(ephemeral=False)
 
             if not self.objection_bot.connected:
@@ -1688,17 +1697,16 @@ class DiscordCourtBot(discord.Client):
                     # Use a zero-width space if message is empty to ensure embed has a description
                     embed_description = cleaned_message if cleaned_message and cleaned_message.strip() else "\u200b"
                     
-                    # Format timestamp as "5:38:35 PM" style
-                    from datetime import datetime
-                    timestamp_str = datetime.fromtimestamp(unix_timestamp).strftime("%I:%M:%S %p")
+                    # Use Discord's timestamp format for user-relative time display
+                    from datetime import datetime, timezone
                     
                     avatar_embed = discord.Embed(
                         title=username,
                         description=embed_description,
-                        color=0x1e1e1e
+                        color=0x1e1e1e,
+                        timestamp=datetime.fromtimestamp(unix_timestamp, tz=timezone.utc)
                     )
                     avatar_embed.set_image(url=avatar_url)
-                    avatar_embed.set_footer(text=timestamp_str)
                     sent_message = await self.bridge_channel.send(embed=avatar_embed)
                     log_verbose(f"🖼️ Sent message as embed with avatar (user_changed={user_changed}, pose_changed={pose_changed})")
                 else:
