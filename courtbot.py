@@ -2761,9 +2761,12 @@ class ObjectionBot:
                         continue
                     self._last_queued_username = username
                 else:
-                    log_verbose(f"[QUEUE] Username unchanged ({username}), skipping change")
+                    # Same user - add a small delay to prevent server overload
+                    # This is necessary because server needs time even without username change
+                    log_verbose(f"[QUEUE] Username unchanged ({username}), adding short delay")
+                    await asyncio.sleep(0.08)  # Match username change delay for consistency
                 
-                # Send the message with minimal delay
+                # Send the message
                 success = await self._send_message_internal(message_text, character_id, pose_id)
                 
                 if success:
