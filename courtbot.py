@@ -282,7 +282,6 @@ class DiscordCourtBot(discord.Client):
         self.last_message_pose_id = None
         self.show_avatars = True  # Track whether avatars are enabled
         self.startup_message = None  # Track startup message to avoid deleting it
-        self.last_avatar_message = None  # Track the last avatar message for efficient editing
         
         # Load persistent data for nickname, color, and character customization
         self.nicknames = load_nicknames()
@@ -1638,33 +1637,49 @@ class DiscordCourtBot(discord.Client):
             showing_new_avatar = self.show_avatars and avatar_url and (user_changed or pose_changed)
             
             # Edit the last avatar embed to plain text BEFORE sending new message
-            # Only do this if we're about to show a new avatar and we have a tracked avatar message
-            if showing_new_avatar and self.last_avatar_message:
+            # Scan the last 3 messages to find and convert any avatar embeds (more robust than tracking)
+            if showing_new_avatar:
                 try:
-                    log_verbose(f"🔍 Converting last avatar embed to plain text...")
-                    # Check if the message still exists and has an embed
-                    if self.last_avatar_message.embeds and len(self.last_avatar_message.embeds) > 0:
-                        embed = self.last_avatar_message.embeds[0]
-                        # Extract the timestamp from the message
-                        msg_timestamp = int(self.last_avatar_message.created_at.timestamp())
-                        embed_username = embed.title
-                        # Handle empty/zero-width space descriptions
-                        embed_message = embed.description if embed.description else ""
-                        # Replace zero-width space with empty string for display
-                        if embed_message == "\u200b":
-                            embed_message = ""
-                        
-                        # Format as plain message without avatar (handle empty messages)
-                        if embed_message:
-                            formatted_plain = f"**{embed_username}**:\n{embed_message}\n-# <t:{msg_timestamp}:T>"
-                        else:
-                            formatted_plain = f"**{embed_username}**:\n-# <t:{msg_timestamp}:T>"
-                        await self.last_avatar_message.edit(content=formatted_plain, embeds=[])
-                        log_verbose(f"✏️ Converted last avatar embed from {embed_username} to plain text")
-                    self.last_avatar_message = None  # Clear after conversion
+                    log_verbose(f"🔍 Scanning last 3 messages for avatar embeds to convert...")
+                    converted_count = 0
+                    async for message in self.bridge_channel.history(limit=3):
+                        # Skip messages that aren't from the bot
+                        if message.author != self.user:
+                            continue
+                        # Skip the startup message
+                        if self.startup_message and message.id == self.startup_message.id:
+                            continue
+                        # Check if this message has an embed (avatar embed)
+                        if message.embeds and len(message.embeds) > 0:
+                            try:
+                                embed = message.embeds[0]
+                                # Extract the timestamp from the message
+                                msg_timestamp = int(message.created_at.timestamp())
+                                embed_username = embed.title
+                                # Handle empty/zero-width space descriptions
+                                embed_message = embed.description if embed.description else ""
+                                # Replace zero-width space with empty string for display
+                                if embed_message == "\u200b":
+                                    embed_message = ""
+                                
+                                # Format as plain message without avatar (handle empty messages)
+                                if embed_message:
+                                    formatted_plain = f"**{embed_username}**:\n{embed_message}\n-# <t:{msg_timestamp}:T>"
+                                else:
+                                    formatted_plain = f"**{embed_username}**:\n-# <t:{msg_timestamp}:T>"
+                                await message.edit(content=formatted_plain, embeds=[])
+                                converted_count += 1
+                                log_verbose(f"✏️ Converted avatar embed from {embed_username} to plain text")
+                            except discord.NotFound:
+                                log_verbose(f"⚠️ Message was deleted during conversion")
+                            except discord.Forbidden:
+                                log_verbose(f"⚠️ No permission to edit message")
+                            except Exception as e:
+                                log_verbose(f"⚠️ Failed to convert embed: {e}")
+                    if converted_count > 0:
+                        log_verbose(f"✅ Converted {converted_count} avatar embed(s) to plain text")
                 except Exception as e:
-                    log_verbose(f"⚠️ Failed to edit last avatar embed: {e}")
-                    self.last_avatar_message = None  # Clear on error
+                    log_verbose(f"⚠️ Error scanning for avatar embeds: {e}")
             
             # Now send the new message - ALWAYS send even if there are errors
             try:
@@ -1704,13 +1719,6 @@ class DiscordCourtBot(discord.Client):
             self.last_discord_message = sent_message
             self.last_message_username = username
             self.last_message_pose_id = pose_id
-            
-            # Track the last avatar message for efficient editing (optimization)
-            if showing_new_avatar:
-                self.last_avatar_message = sent_message
-            else:
-                # Don't track plain text messages
-                pass
             
             # Log the message in simple format for non-verbose mode
             log_message("Chatroom", username, cleaned_message)
