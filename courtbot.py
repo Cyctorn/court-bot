@@ -1500,9 +1500,12 @@ class DiscordCourtBot(discord.Client):
             # Strip color codes before sending to Discord
             cleaned_message = self.strip_color_codes(message)
             
-            # Check for BGM commands and fetch music URLs
+            # Check for BGM commands and fetch music URLs (limit to 3 per message to prevent spam)
             bgm_ids = self.extract_bgm_commands(message)
             if bgm_ids:
+                if len(bgm_ids) > 3:
+                    log_verbose(f"⚠️ BGM spam detected: {len(bgm_ids)} commands in one message, limiting to 3")
+                    bgm_ids = bgm_ids[:3]
                 for bgm_id in bgm_ids:
                     music_data = await self.fetch_music_url(bgm_id)
                     if music_data:
@@ -1535,9 +1538,12 @@ class DiscordCourtBot(discord.Client):
                         await self.bridge_channel.send(embed=music_embed)
                         log_verbose(f"🎵 Posted music info for BGM {bgm_id}: '{music_data['name']}' -> {music_data['url']}")
             
-            # Check for SFX commands and fetch sound effect URLs
+            # Check for SFX commands and fetch sound effect URLs (limit to 3 per message to prevent spam)
             sfx_ids = self.extract_sfx_commands(message)
             if sfx_ids:
+                if len(sfx_ids) > 3:
+                    log_verbose(f"⚠️ SFX spam detected: {len(sfx_ids)} commands in one message, limiting to 3")
+                    sfx_ids = sfx_ids[:3]
                 for sfx_id in sfx_ids:
                     sfx_data = await self.fetch_sfx_url(sfx_id)
                     if sfx_data:
@@ -1570,9 +1576,12 @@ class DiscordCourtBot(discord.Client):
                         await self.bridge_channel.send(embed=sfx_embed)
                         log_verbose(f"🔊 Posted sound effect info for SFX {sfx_id}: '{sfx_data['name']}' -> {sfx_data['url']}")
             
-            # Check for evidence commands and fetch evidence data
+            # Check for evidence commands and fetch evidence data (limit to 3 per message to prevent spam)
             evidence_ids = self.extract_evidence_commands(message)
             if evidence_ids:
+                if len(evidence_ids) > 3:
+                    log_verbose(f"⚠️ Evidence spam detected: {len(evidence_ids)} commands in one message, limiting to 3")
+                    evidence_ids = evidence_ids[:3]
                 for evidence_id in evidence_ids:
                     evidence_data = await self.fetch_evidence_data(evidence_id)
                     if evidence_data:
