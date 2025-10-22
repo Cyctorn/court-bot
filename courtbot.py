@@ -1487,6 +1487,12 @@ class DiscordCourtBot(discord.Client):
             message_queued = await self.objection_bot.queue_message(target_username, send_content, character_id=char_id, pose_id=p_id)
             
             if message_queued:
+                # Reset avatar embed tracking so next courtroom message shows an embed
+                # This allows Discord-to-courtroom conversations to alternate with avatar embeds
+                self.last_message_username = None
+                self.last_message_pose_id = None
+                log_verbose(f"🔄 Reset avatar tracking after Discord message")
+                
                 # Log the message in simple format for non-verbose mode
                 log_message("Discord", display_name, message.content if message.content else "[media]")
                 log_verbose(f"🔄 Discord → Queue: {target_username}: {send_content[:50]}...")
