@@ -1652,22 +1652,37 @@ class DiscordCourtBot(discord.Client):
             showing_new_avatar = self.show_avatars and avatar_url and (user_changed or pose_changed)
             
             # Edit the last avatar embed to plain text BEFORE sending new message
-            # Scan the last 3 messages to find and convert any avatar embeds (more robust than tracking)
+            # Scan the last 10 messages to find and convert any avatar embeds (more robust than tracking)
             if showing_new_avatar:
                 try:
-                    log_verbose(f"🔍 Scanning last 3 messages for avatar embeds to convert...")
+                    log_verbose(f"🔍 Scanning last 10 messages for avatar embeds to convert...")
                     converted_count = 0
-                    async for message in self.bridge_channel.history(limit=3):
+                    async for message in self.bridge_channel.history(limit=10):
                         # Skip messages that aren't from the bot
                         if message.author != self.user:
                             continue
                         # Skip the startup message
                         if self.startup_message and message.id == self.startup_message.id:
                             continue
-                        # Check if this message has an embed (avatar embed)
+                        # Check if this message has an embed
                         if message.embeds and len(message.embeds) > 0:
                             try:
                                 embed = message.embeds[0]
+                                
+                                # Skip system embeds (BGM, SFX, Evidence, notifications, etc.)
+                                # Avatar embeds have the username as the title (no emoji prefixes)
+                                # System embeds have emoji prefixes like "🎵", "🔊", "📄", "✏️", etc.
+                                embed_title = embed.title if embed.title else ""
+                                
+                                # List of emoji prefixes used in system embeds
+                                system_prefixes = ["🎵", "🔊", "📄", "✏️", "👋", "🌉", "🔄", "❌", "👑", "🛡️"]
+                                is_system_embed = any(embed_title.startswith(prefix) for prefix in system_prefixes)
+                                
+                                if is_system_embed:
+                                    log_verbose(f"⏭️ Skipping system embed: {embed_title}")
+                                    continue
+                                
+                                # This is an avatar embed - convert it to plain text
                                 # Extract the timestamp from the message
                                 msg_timestamp = int(message.created_at.timestamp())
                                 embed_username = embed.title
