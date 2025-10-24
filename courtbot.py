@@ -1641,6 +1641,7 @@ class DiscordCourtBot(discord.Client):
             # Only do this if we're about to show a new avatar and we have a tracked avatar message
             if showing_new_avatar and self.last_avatar_message:
                 try:
+<<<<<<< Updated upstream
                     log_verbose(f"🔍 Converting last avatar embed to plain text...")
                     # Check if the message still exists and has an embed
                     if self.last_avatar_message.embeds and len(self.last_avatar_message.embeds) > 0:
@@ -1662,6 +1663,84 @@ class DiscordCourtBot(discord.Client):
                         await self.last_avatar_message.edit(content=formatted_plain, embeds=[])
                         log_verbose(f"✏️ Converted last avatar embed from {embed_username} to plain text")
                     self.last_avatar_message = None  # Clear after conversion
+=======
+                    log_verbose(f"🔍 Scanning last 10 messages for avatar embeds to convert...")
+                    converted_count = 0
+                    async for message in self.bridge_channel.history(limit=10):
+                        # Skip messages that aren't from the bot
+                        if message.author != self.user:
+                            continue
+                        # Skip the startup message
+                        if self.startup_message and message.id == self.startup_message.id:
+                            continue
+                        # Check if this message has an embed
+                        if message.embeds and len(message.embeds) > 0:
+                            try:
+                                # Find the avatar embed (it has an image set via set_image, not a thumbnail or URL)
+                                # Link preview embeds and other auto-generated embeds won't match this pattern
+                                avatar_embed = None
+                                for embed in message.embeds:
+                                    # Avatar embeds have:
+                                    # 1. An image (from set_image) - not a thumbnail
+                                    # 2. A title (the username)
+                                    # 3. A description (the message content)
+                                    # 4. NOT a URL field (link previews have embed.url set)
+                                    if embed.image and embed.image.url and embed.title and not embed.url:
+                                        avatar_embed = embed
+                                        break
+                                
+                                # If no avatar embed found, skip this message
+                                if not avatar_embed:
+                                    log_verbose(f"⏭️ No avatar embed found in message (may be link preview or other embed)")
+                                    continue
+                                
+                                # Skip system embeds (BGM, SFX, Evidence, notifications, etc.)
+                                # Avatar embeds have the username as the title (no emoji prefixes)
+                                # System embeds have emoji prefixes like "🎵", "🔊", "📄", "✏️", etc.
+                                embed_title = avatar_embed.title if avatar_embed.title else ""
+                                
+                                # List of emoji prefixes used in system embeds
+                                system_prefixes = ["🎵", "🔊", "📄", "✏️", "👋", "🌉", "🔄", "❌", "👑", "🛡️"]
+                                is_system_embed = any(embed_title.startswith(prefix) for prefix in system_prefixes)
+                                
+                                if is_system_embed:
+                                    log_verbose(f"⏭️ Skipping system embed: {embed_title}")
+                                    continue
+                                
+                                # This is an avatar embed - convert it to plain text
+                                # Extract the timestamp from the message
+                                msg_timestamp = int(message.created_at.timestamp())
+                                embed_username = avatar_embed.title
+                                # Handle empty/zero-width space descriptions
+                                embed_message = avatar_embed.description if avatar_embed.description else ""
+                                # Replace zero-width space with empty string for display
+                                if embed_message == "\u200b":
+                                    embed_message = ""
+                                
+                                # IMPORTANT: Preserve the original message content if it exists
+                                # This handles cases where Discord added link preview embeds
+                                original_content = message.content if message.content else ""
+                                
+                                # Format as plain message without avatar (handle empty messages)
+                                # Use original content if available (contains the actual link), otherwise use embed description
+                                display_message = original_content if original_content else embed_message
+                                
+                                if display_message:
+                                    formatted_plain = f"**{embed_username}**:\n{display_message}\n-# <t:{msg_timestamp}:T>"
+                                else:
+                                    formatted_plain = f"**{embed_username}**:\n-# <t:{msg_timestamp}:T>"
+                                await message.edit(content=formatted_plain, embeds=[])
+                                converted_count += 1
+                                log_verbose(f"✏️ Converted avatar embed from {embed_username} to plain text")
+                            except discord.NotFound:
+                                log_verbose(f"⚠️ Message was deleted during conversion")
+                            except discord.Forbidden:
+                                log_verbose(f"⚠️ No permission to edit message")
+                            except Exception as e:
+                                log_verbose(f"⚠️ Failed to convert embed: {e}")
+                    if converted_count > 0:
+                        log_verbose(f"✅ Converted {converted_count} avatar embed(s) to plain text")
+>>>>>>> Stashed changes
                 except Exception as e:
                     log_verbose(f"⚠️ Failed to edit last avatar embed: {e}")
                     self.last_avatar_message = None  # Clear on error
