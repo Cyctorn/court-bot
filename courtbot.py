@@ -1677,6 +1677,12 @@ class DiscordCourtBot(discord.Client):
                             try:
                                 embed = message.embeds[0]
                                 
+                                # Skip link preview embeds (they have embed.url set)
+                                # Avatar embeds are created with set_image() and don't have a URL field
+                                if embed.url:
+                                    log_verbose(f"⏭️ Skipping link preview embed: {embed.title}")
+                                    continue
+                                
                                 # Skip system embeds (BGM, SFX, Evidence, notifications, etc.)
                                 # Avatar embeds have the username as the title (no emoji prefixes)
                                 # System embeds have emoji prefixes like "🎵", "🔊", "📄", "✏️", etc.
