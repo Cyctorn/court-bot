@@ -1641,29 +1641,6 @@ class DiscordCourtBot(discord.Client):
             # Only do this if we're about to show a new avatar and we have a tracked avatar message
             if showing_new_avatar and self.last_avatar_message:
                 try:
-<<<<<<< Updated upstream
-                    log_verbose(f"🔍 Converting last avatar embed to plain text...")
-                    # Check if the message still exists and has an embed
-                    if self.last_avatar_message.embeds and len(self.last_avatar_message.embeds) > 0:
-                        embed = self.last_avatar_message.embeds[0]
-                        # Extract the timestamp from the message
-                        msg_timestamp = int(self.last_avatar_message.created_at.timestamp())
-                        embed_username = embed.title
-                        # Handle empty/zero-width space descriptions
-                        embed_message = embed.description if embed.description else ""
-                        # Replace zero-width space with empty string for display
-                        if embed_message == "\u200b":
-                            embed_message = ""
-                        
-                        # Format as plain message without avatar (handle empty messages)
-                        if embed_message:
-                            formatted_plain = f"**{embed_username}**:\n{embed_message}\n-# <t:{msg_timestamp}:T>"
-                        else:
-                            formatted_plain = f"**{embed_username}**:\n-# <t:{msg_timestamp}:T>"
-                        await self.last_avatar_message.edit(content=formatted_plain, embeds=[])
-                        log_verbose(f"✏️ Converted last avatar embed from {embed_username} to plain text")
-                    self.last_avatar_message = None  # Clear after conversion
-=======
                     log_verbose(f"🔍 Scanning last 10 messages for avatar embeds to convert...")
                     converted_count = 0
                     async for message in self.bridge_channel.history(limit=10):
@@ -1740,7 +1717,6 @@ class DiscordCourtBot(discord.Client):
                                 log_verbose(f"⚠️ Failed to convert embed: {e}")
                     if converted_count > 0:
                         log_verbose(f"✅ Converted {converted_count} avatar embed(s) to plain text")
->>>>>>> Stashed changes
                 except Exception as e:
                     log_verbose(f"⚠️ Failed to edit last avatar embed: {e}")
                     self.last_avatar_message = None  # Clear on error
