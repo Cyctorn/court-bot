@@ -1634,8 +1634,16 @@ class DiscordCourtBot(discord.Client):
             pose_changed = pose_id is not None and self.last_message_pose_id != pose_id
             user_changed = self.last_message_username != username
             
+            # Check if message contains URLs that Discord might preview (to avoid embed conflicts)
+            # Simple URL detection: look for http:// or https://
+            contains_url = 'http://' in cleaned_message or 'https://' in cleaned_message
+            
             # Determine if we're showing an avatar embed for this new message
-            showing_new_avatar = self.show_avatars and avatar_url and (user_changed or pose_changed)
+            # Don't show avatar if message contains URLs (Discord will add link preview embeds)
+            showing_new_avatar = self.show_avatars and avatar_url and (user_changed or pose_changed) and not contains_url
+            
+            if contains_url and avatar_url:
+                log_verbose(f"🔗 Message contains URL, skipping avatar embed to avoid conflicts with link preview")
             
             # Edit the last avatar embed to plain text BEFORE sending new message
             # Only do this if we're about to show a new avatar and we have a tracked avatar message
