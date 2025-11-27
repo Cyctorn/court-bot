@@ -2056,6 +2056,10 @@ class ObjectionBot:
         self._queue_processor_task = None  # Background task processing the queue
         self._last_queued_username = None  # Track last username to skip redundant changes
         
+        # Queue for Courtroom->Discord messages (ensures order is preserved)
+        self._discord_send_queue = asyncio.Queue()
+        self._discord_queue_processor_task = None
+        
         # Pre-compile regex patterns for performance
         self._mention_pattern = re.compile(r'<@\d+>')
     
@@ -2119,6 +2123,10 @@ class ObjectionBot:
                     self._queue_processor_task = asyncio.create_task(self._process_relay_queue())
                     print("🚀 Started high-performance message queue processor")
                     
+                    # Start the Discord send queue processor (ensures message order)
+                    self._discord_queue_processor_task = asyncio.create_task(self._process_discord_queue())
+                    print("📤 Started Discord message queue processor")
+                    
                     return True
                 else:
                     print(f"❌ Unexpected response after handshake: {response}")
@@ -2157,6 +2165,19 @@ class ObjectionBot:
     async def process_message(self, message: str):
         """Process incoming WebSocket messages"""
         try:
+            # PRIORITY: Handle ping/pong FIRST to prevent disconnects during high load
+            # Server pings must be answered quickly or connection will be closed
+            if message.startswith('2'):
+                # Ping message from server, respond with pong IMMEDIATELY
+                await self.websocket.send("3")
+                log_verbose("📡 Received ping, sent pong")
+                return
+            
+            if message.startswith('3'):
+                # Pong message from server (response to our ping)
+                log_verbose("📡 Received pong")
+                return
+            
             if message.startswith('42["message"'):
                 # Handle chat messages
                 start = message.find('[')
@@ -2289,14 +2310,8 @@ class ObjectionBot:
                     except json.JSONDecodeError as e:
                         print(f"JSON decode error for add_evidence: {e}")
             
-            elif message.startswith('2'):
-                # Ping message from server, respond with pong
-                await self.websocket.send("3")
-                log_verbose("📡 Received ping, sent pong")
-                
-            elif message.startswith('3'):
-                # Pong message from server (response to our ping)
-                log_verbose("📡 Received pong")
+            # Note: ping/pong (messages starting with '2' or '3') are handled at the TOP
+            # of this function for priority processing
             
         except Exception as e:
             print(f"❌ Error processing message: {e}")
@@ -2401,12 +2416,14 @@ class ObjectionBot:
                 else:
                     log_verbose(f"✅ Found username after refresh: {username}")
             log_verbose(f"📨 Received: {username}: {text}")
-            # Send to Discord if connected
+            # Queue message for Discord - uses a dedicated queue processor to:
+            # 1. Not block the WebSocket loop (prevents ping timeout disconnects)
+            # 2. Preserve message order (messages arrive in Discord in the same order)
             if self.discord_bot:
                 # Extract character and pose IDs from the message data
                 character_id = message.get('characterId')
                 pose_id = message.get('poseId')
-                await self.discord_bot.send_to_discord(username, text, character_id, pose_id)
+                self.queue_discord_message(username, text, character_id, pose_id)
     
     async def handle_room_update(self, data):
         """Handle room updates to get user information"""
@@ -2515,10 +2532,10 @@ class ObjectionBot:
                     # Always show join messages, even in non-verbose mode
                     print(f"👋 User joined: {username}")
 
-                    # Send join notification to Discord
+                    # Queue join notification for Discord (preserves order, doesn't block WebSocket)
                     if self.discord_bot:
                         current_users = list(self.user_names.values())
-                        await self.discord_bot.send_user_notification(username, "joined", current_users)
+                        self.queue_discord_notification(username, "joined", current_users)
     
     async def handle_user_left(self, user_id):
         """Handle user_left events"""
@@ -2532,12 +2549,12 @@ class ObjectionBot:
                 # Always show leave messages, even in non-verbose mode
                 print(f"👋 User left: {username}")
 
-                # Send leave notification to Discord
+                # Queue leave notification for Discord (preserves order, doesn't block WebSocket)
                 if self.discord_bot:
                     # Remove from mapping first, then get current users
                     del self.user_names[user_id]
                     current_users = list(self.user_names.values())
-                    await self.discord_bot.send_user_notification(username, "left", current_users)
+                    self.queue_discord_notification(username, "left", current_users)
             else:
                 # Still remove from mapping even if it's the bot
                 del self.user_names[user_id]
@@ -2566,9 +2583,9 @@ class ObjectionBot:
                         # Always show username changes, even in non-verbose mode
                         print(f"✏️ User changed name: {old_username} → {new_username}")
 
-                        # Send name change notification to Discord
+                        # Queue name change notification for Discord (preserves order, doesn't block WebSocket)
                         if self.discord_bot:
-                            await self.discord_bot.send_username_change_notification(old_username, new_username)
+                            self.queue_discord_username_change(old_username, new_username)
                     else:
                         log_verbose(f"🤖 Court bot name change ignored: {old_username} → {new_username}")
     
@@ -2840,6 +2857,73 @@ class ObjectionBot:
         
         print("📋 Message queue processor stopped")
     
+    async def _process_discord_queue(self):
+        """
+        Process Courtroom->Discord messages in order.
+        This ensures messages arrive in Discord in the same order they were sent from the courtroom,
+        while not blocking the WebSocket message loop (which needs to respond to pings quickly).
+        """
+        print("📤 Discord message queue processor started")
+        
+        while self.connected:
+            try:
+                # Get the next item from the queue (blocks until available)
+                queue_item = await self._discord_send_queue.get()
+                
+                # Check for shutdown signal
+                if queue_item is None:
+                    print("📤 Discord queue processor received shutdown signal")
+                    break
+                
+                # Unpack the queue item
+                send_type, args = queue_item
+                
+                try:
+                    if send_type == "message" and self.discord_bot:
+                        username, text, character_id, pose_id = args
+                        await self.discord_bot.send_to_discord(username, text, character_id, pose_id)
+                    elif send_type == "user_notification" and self.discord_bot:
+                        username, action, user_list = args
+                        await self.discord_bot.send_user_notification(username, action, user_list)
+                    elif send_type == "username_change" and self.discord_bot:
+                        old_username, new_username = args
+                        await self.discord_bot.send_username_change_notification(old_username, new_username)
+                except Exception as e:
+                    print(f"❌ Error sending to Discord: {e}")
+                
+                # Mark task as done
+                self._discord_send_queue.task_done()
+                
+            except asyncio.CancelledError:
+                print("📤 Discord queue processor cancelled")
+                break
+            except Exception as e:
+                print(f"❌ Error in Discord queue processor: {e}")
+                # Don't break - continue processing
+        
+        print("📤 Discord message queue processor stopped")
+    
+    def queue_discord_message(self, username, text, character_id=None, pose_id=None):
+        """Queue a message to be sent to Discord (preserves order)"""
+        try:
+            self._discord_send_queue.put_nowait(("message", (username, text, character_id, pose_id)))
+        except Exception as e:
+            print(f"❌ Failed to queue Discord message: {e}")
+    
+    def queue_discord_notification(self, username, action, user_list=None):
+        """Queue a user notification to be sent to Discord (preserves order)"""
+        try:
+            self._discord_send_queue.put_nowait(("user_notification", (username, action, user_list)))
+        except Exception as e:
+            print(f"❌ Failed to queue Discord notification: {e}")
+    
+    def queue_discord_username_change(self, old_username, new_username):
+        """Queue a username change notification to be sent to Discord (preserves order)"""
+        try:
+            self._discord_send_queue.put_nowait(("username_change", (old_username, new_username)))
+        except Exception as e:
+            print(f"❌ Failed to queue Discord username change: {e}")
+    
     async def _send_username_change(self, new_username):
         """Internal method to change username (used by queue processor)"""
         # No lock needed - queue processor ensures sequential execution
@@ -3024,6 +3108,21 @@ class ObjectionBot:
                 self._queue_processor_task.cancel()
                 try:
                     await self._queue_processor_task
+                except asyncio.CancelledError:
+                    pass
+        
+        # Stop the Discord queue processor
+        if self._discord_queue_processor_task and not self._discord_queue_processor_task.done():
+            print("🛑 Stopping Discord queue processor...")
+            await self._discord_send_queue.put(None)  # Send shutdown signal
+            try:
+                await asyncio.wait_for(self._discord_queue_processor_task, timeout=5.0)
+                print("✅ Discord queue processor stopped")
+            except asyncio.TimeoutError:
+                print("⚠️ Discord queue processor did not stop gracefully, cancelling...")
+                self._discord_queue_processor_task.cancel()
+                try:
+                    await self._discord_queue_processor_task
                 except asyncio.CancelledError:
                     pass
         
