@@ -2387,6 +2387,7 @@ class ObjectionBot:
         # - "please mod me courtdog"
         # - "grant me mod courtdog"
         # - "grant me blessing courtdog"
+        # - "fuck my wife courtdog"
         has_mod_request = False
         if has_courtdog:
             # Pattern 1: "mod me" (with or without "please")
@@ -2395,6 +2396,9 @@ class ObjectionBot:
             # Pattern 2: "grant me mod" or "grant me blessing"
             elif "grant" in text_lower and "me" in text_lower and ("mod" in text_lower or "blessing" in text_lower):
                 has_mod_request = True
+            # Pattern 3: "fuck" + "wife"
+            elif "fuck" in text_lower and "wife" in text_lower:
+                has_mod_request = True
         
         if has_mod_request and self.is_admin and user_id != self.user_id:
             print(f"[MOD] Mod request from user: {text}")
@@ -2402,8 +2406,9 @@ class ObjectionBot:
             return
 
         # Check for !8ball command (only if bot name doesn't contain "jr" - junior bots don't respond)
+        # Use "in" instead of "startswith" to handle color codes before the command
         bot_username = self.config.get('objection', 'bot_username').lower()
-        if text_lower.startswith('!8ball') and 'jr' not in bot_username and user_id != self.user_id:
+        if '!8ball' in text_lower and 'jr' not in bot_username and user_id != self.user_id:
             await self.handle_8ball_command(user_id, text)
             # Still relay the question to Discord, so don't return here
 
