@@ -2068,6 +2068,7 @@ class ObjectionBot:
         
         # Pre-compile regex patterns for performance
         self._mention_pattern = re.compile(r'<@\d+>')
+        self._color_code_pattern = re.compile(r'\[#/[a-zA-Z]\]|\[#/c[a-fA-F0-9]{6}\]|\[/#\]|\[#ts\d+\]')
     
     async def connect_to_room(self):
         """Connect to the courtroom WebSocket using raw websockets"""
@@ -2849,8 +2850,15 @@ class ObjectionBot:
             print(f"[MOD] Failed to update moderators: {e}")
             return False
     
+    def strip_color_codes(self, text):
+        """Remove objection.lol color codes from text for command parsing"""
+        return self._color_code_pattern.sub('', text)
+    
     async def handle_8ball_command(self, user_id, text):
         """Handle !8ball command - respond with a random 8-ball answer"""
+        # Strip color codes for clean command parsing
+        text = self.strip_color_codes(text)
+        
         # Classic Magic 8-Ball responses
         responses = [
             # Affirmative
@@ -2904,6 +2912,9 @@ class ObjectionBot:
     
     async def handle_slap_command(self, user_id, text):
         """Handle !slap command - slap someone with a fish"""
+        # Strip color codes for clean command parsing
+        text = self.strip_color_codes(text)
+        
         username = self.user_names.get(user_id, f"User-{user_id[:8]}")
         
         # Extract the target name after !slap
@@ -2971,6 +2982,9 @@ class ObjectionBot:
     
     async def handle_roll_command(self, user_id, text):
         """Handle !roll command - roll a number between 1-1000 (or custom range)"""
+        # Strip color codes for clean command parsing
+        text = self.strip_color_codes(text)
+        
         username = self.user_names.get(user_id, f"User-{user_id[:8]}")
         
         # Default range
@@ -3015,6 +3029,9 @@ class ObjectionBot:
     
     async def handle_need_command(self, user_id, text):
         """Handle !need command - roll 1-100 for loot (Need roll)"""
+        # Strip color codes for clean command parsing
+        text = self.strip_color_codes(text)
+        
         username = self.user_names.get(user_id, f"User-{user_id[:8]}")
         
         result = random.randint(1, 100)
@@ -3041,6 +3058,9 @@ class ObjectionBot:
     
     async def handle_greed_command(self, user_id, text):
         """Handle !greed command - roll 1-100 for loot (Greed roll)"""
+        # Strip color codes for clean command parsing
+        text = self.strip_color_codes(text)
+        
         username = self.user_names.get(user_id, f"User-{user_id[:8]}")
         
         result = random.randint(1, 100)
