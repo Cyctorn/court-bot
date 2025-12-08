@@ -2421,13 +2421,21 @@ class ObjectionBot:
                 await self.handle_8ball_command(user_id, text)
                 # Still relay the question to Discord, so don't return here
             
-            # !slap command - skip if message contains � (prevents feedback loop)
+            # !slap command - skip if message contains 🐟 (prevents feedback loop)
             if '!slap' in text_lower and '🐟' not in text:
                 await self.handle_slap_command(user_id, text)
             
             # !roll command - skip if message contains 🎲 (prevents feedback loop)
             if '!roll' in text_lower and '🎲' not in text:
                 await self.handle_roll_command(user_id, text)
+            
+            # !need command - skip if message contains 🎯 (prevents feedback loop)
+            if '!need' in text_lower and '🎯' not in text:
+                await self.handle_need_command(user_id, text)
+            
+            # !greed command - skip if message contains 💰 (prevents feedback loop)
+            if '!greed' in text_lower and '💰' not in text:
+                await self.handle_greed_command(user_id, text)
 
         if user_id != self.user_id:
             # Check ignore patterns 
@@ -3002,6 +3010,58 @@ class ObjectionBot:
                 title="🎲 Dice Roll",
                 description=f"**{username}** rolls **{result}** (1-{max_roll})",
                 color=0x9b59b6  # Purple color
+            )
+            await self.discord_bot.bridge_channel.send(embed=embed)
+    
+    async def handle_need_command(self, user_id, text):
+        """Handle !need command - roll 1-100 for loot (Need roll)"""
+        username = self.user_names.get(user_id, f"User-{user_id[:8]}")
+        
+        result = random.randint(1, 100)
+        response = f"🎯 {username} rolls Need: {result}"
+        
+        print(f"[NEED] {username} rolled {result}")
+        
+        # Change to bot's default username for command responses
+        original_username = self.config.get('objection', 'bot_username')
+        await self.change_username_and_wait(original_username)
+        self._last_queued_username = None  # Reset so next Discord message changes username
+        
+        # Send the response to the courtroom
+        await self.send_message(response)
+        
+        # Also send the response to Discord
+        if self.discord_bot and self.discord_bot.bridge_channel:
+            embed = discord.Embed(
+                title="🎯 Need Roll",
+                description=f"**{username}** rolls **{result}**",
+                color=0x2ecc71  # Green color
+            )
+            await self.discord_bot.bridge_channel.send(embed=embed)
+    
+    async def handle_greed_command(self, user_id, text):
+        """Handle !greed command - roll 1-100 for loot (Greed roll)"""
+        username = self.user_names.get(user_id, f"User-{user_id[:8]}")
+        
+        result = random.randint(1, 100)
+        response = f"💰 {username} rolls Greed: {result}"
+        
+        print(f"[GREED] {username} rolled {result}")
+        
+        # Change to bot's default username for command responses
+        original_username = self.config.get('objection', 'bot_username')
+        await self.change_username_and_wait(original_username)
+        self._last_queued_username = None  # Reset so next Discord message changes username
+        
+        # Send the response to the courtroom
+        await self.send_message(response)
+        
+        # Also send the response to Discord
+        if self.discord_bot and self.discord_bot.bridge_channel:
+            embed = discord.Embed(
+                title="💰 Greed Roll",
+                description=f"**{username}** rolls **{result}**",
+                color=0xf1c40f  # Gold color
             )
             await self.discord_bot.bridge_channel.send(embed=embed)
     
