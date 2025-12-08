@@ -196,3 +196,12 @@ config.json
 courtroom_bot.py
 2.env
 .github/copilot-instructions.md
+
+# Music scraper VPN configs (contains passwords)
+music-scraper/vpn/
+music-scraper/*.ovpn
+music-scraper/auth.txt
+music-scraper/data/
+/music-scraper-proxy
+/music-scraper
+/music-uploader

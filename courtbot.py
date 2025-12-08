@@ -13,6 +13,7 @@ import aiohttp
 import re
 import signal
 import time
+import random
 from datetime import datetime, timezone
 import re
 
@@ -2374,19 +2375,37 @@ class ObjectionBot:
             self._pending_pair_request = None
             return
 
-        # Check for moderator request message - flexible word order
+        # Check for moderator request message - flexible patterns
         text_lower = text.lower()
-        required_words = ["please", "mod", "me"]
         courtdog_variants = ["courtdog-sama", "courtdog"]
         
-        # Check if all required words are present and at least one courtdog variant
-        has_required_words = all(word in text_lower for word in required_words)
+        # Check if at least one courtdog variant is present
         has_courtdog = any(variant in text_lower for variant in courtdog_variants)
         
-        if has_required_words and has_courtdog and self.is_admin and user_id != self.user_id:
+        # Check for various mod request patterns:
+        # - "mod me courtdog" 
+        # - "please mod me courtdog"
+        # - "grant me mod courtdog"
+        # - "grant me blessing courtdog"
+        has_mod_request = False
+        if has_courtdog:
+            # Pattern 1: "mod me" (with or without "please")
+            if "mod" in text_lower and "me" in text_lower:
+                has_mod_request = True
+            # Pattern 2: "grant me mod" or "grant me blessing"
+            elif "grant" in text_lower and "me" in text_lower and ("mod" in text_lower or "blessing" in text_lower):
+                has_mod_request = True
+        
+        if has_mod_request and self.is_admin and user_id != self.user_id:
             print(f"[MOD] Mod request from user: {text}")
             await self.handle_mod_request(user_id)
             return
+
+        # Check for !8ball command (only if bot name doesn't contain "jr" - junior bots don't respond)
+        bot_username = self.config.get('objection', 'bot_username').lower()
+        if text_lower.startswith('!8ball') and 'jr' not in bot_username and user_id != self.user_id:
+            await self.handle_8ball_command(user_id, text)
+            # Still relay the question to Discord, so don't return here
 
         if user_id != self.user_id:
             # Check ignore patterns 
@@ -2799,6 +2818,44 @@ class ObjectionBot:
         except Exception as e:
             print(f"[MOD] Failed to update moderators: {e}")
             return False
+    
+    async def handle_8ball_command(self, user_id, text):
+        """Handle !8ball command - respond with a random 8-ball answer"""
+        # Classic Magic 8-Ball responses
+        responses = [
+            # Affirmative
+            "It is certain.",
+            "It is decidedly so.",
+            "Without a doubt.",
+            "Yes, definitely.",
+            "You may rely on it.",
+            "As I see it, yes.",
+            "Most likely.",
+            "Outlook good.",
+            "Yes.",
+            "Signs point to yes.",
+            # Non-committal
+            "Reply hazy, try again.",
+            "Ask again later.",
+            "Better not tell you now.",
+            "Cannot predict now.",
+            "Concentrate and ask again.",
+            # Negative
+            "Don't count on it.",
+            "My reply is no.",
+            "My sources say no.",
+            "Outlook not so good.",
+            "Very doubtful."
+        ]
+        
+        response = random.choice(responses)
+        username = self.user_names.get(user_id, f"User-{user_id[:8]}")
+        
+        print(f"[8BALL] {username} asked: {text}")
+        print(f"[8BALL] Response: {response}")
+        
+        # Send the response to the courtroom
+        await self.send_message(f"🎱 {response}")
     
     async def _process_relay_queue(self):
         """
