@@ -1409,6 +1409,10 @@ class DiscordCourtBot(discord.Client):
                 print(f"🚫 Ignoring message with user mention: {message.content[:50]}...")
                 return
             
+            # Note: !commands (8ball, slap, roll) are NOT handled here on Discord side
+            # They get relayed to courtroom where the bot processes them and sends embeds back
+            # This prevents duplicate responses
+            
             # Extract image and video URLs from attachments and embeds
             media_urls = self.extract_media_urls(message)
             
@@ -1501,6 +1505,7 @@ class DiscordCourtBot(discord.Client):
                 log_verbose(f"❌ Failed to queue message to objection.lol")
             
             await self.cleanup_messages()
+
     async def send_to_discord(self, username, message, character_id=None, pose_id=None):
         """Send a message from objection.lol to Discord"""
         if self.bridge_channel:
@@ -2405,12 +2410,24 @@ class ObjectionBot:
             await self.handle_mod_request(user_id)
             return
 
-        # Check for !8ball command (only if bot name doesn't contain "jr" - junior bots don't respond)
+        # Check for chat commands (only if bot name doesn't contain "jr" - junior bots don't respond)
         # Use "in" instead of "startswith" to handle color codes before the command
+        # Allow commands from anyone including the bot itself (for Discord relay)
+        # Feedback loops are prevented by emoji checks (🎱, 🐟, 🎲)
         bot_username = self.config.get('objection', 'bot_username').lower()
-        if '!8ball' in text_lower and 'jr' not in bot_username and user_id != self.user_id:
-            await self.handle_8ball_command(user_id, text)
-            # Still relay the question to Discord, so don't return here
+        if 'jr' not in bot_username:
+            # !8ball command - skip if message contains 🎱 (prevents feedback loop)
+            if '!8ball' in text_lower and '🎱' not in text:
+                await self.handle_8ball_command(user_id, text)
+                # Still relay the question to Discord, so don't return here
+            
+            # !slap command - skip if message contains � (prevents feedback loop)
+            if '!slap' in text_lower and '🐟' not in text:
+                await self.handle_slap_command(user_id, text)
+            
+            # !roll command - skip if message contains 🎲 (prevents feedback loop)
+            if '!roll' in text_lower and '🎲' not in text:
+                await self.handle_roll_command(user_id, text)
 
         if user_id != self.user_id:
             # Check ignore patterns 
@@ -2859,8 +2876,134 @@ class ObjectionBot:
         print(f"[8BALL] {username} asked: {text}")
         print(f"[8BALL] Response: {response}")
         
+        # Change to bot's default username for command responses
+        original_username = self.config.get('objection', 'bot_username')
+        await self.change_username_and_wait(original_username)
+        self._last_queued_username = None  # Reset so next Discord message changes username
+        
         # Send the response to the courtroom
         await self.send_message(f"🎱 {response}")
+        
+        # Also send the response to Discord so Discord users see it
+        if self.discord_bot and self.discord_bot.bridge_channel:
+            embed = discord.Embed(
+                title="🎱 Magic 8-Ball",
+                description=response,
+                color=0x000000  # Black like an 8-ball
+            )
+            embed.set_footer(text=f"Asked by {username} (in courtroom)")
+            await self.discord_bot.bridge_channel.send(embed=embed)
+    
+    async def handle_slap_command(self, user_id, text):
+        """Handle !slap command - slap someone with a fish"""
+        username = self.user_names.get(user_id, f"User-{user_id[:8]}")
+        
+        # Extract the target name after !slap
+        text_lower = text.lower()
+        slap_index = text_lower.find('!slap')
+        target = text[slap_index + 5:].strip()  # Get everything after !slap
+        
+        if not target:
+            target = "themselves"
+        
+        # Fish only!
+        fish = [
+            "a large trout",
+            "a wet salmon",
+            "a slippery mackerel",
+            "an angry catfish",
+            "a frozen tuna",
+            "a flailing carp",
+            "a slimy eel",
+            "a smelly herring",
+            "a flopping bass",
+            "a massive halibut",
+            "a spiky pufferfish",
+            "a legendary swordfish",
+            "a majestic bluefin tuna",
+            "a wiggling sardine",
+            "a prehistoric coelacanth"
+        ]
+        
+        # Various action phrases
+        phrases = [
+            f"🐟 {username} slaps {target} with {{fish}}!",
+            f"🐟 {username} smacks {target} across the face with {{fish}}!",
+            f"🐟 {username} wallops {target} using {{fish}}!",
+            f"🐟 {username} whacks {target} upside the head with {{fish}}!",
+            f"🐟 {username} delivers a devastating blow to {target} with {{fish}}!",
+            f"🐟 {username} bonks {target} on the noggin with {{fish}}!",
+            f"🐟 {username} thwacks {target} silly with {{fish}}!",
+            f"🐟 *SLAP!* {username} hits {target} with {{fish}}!",
+            f"🐟 {username} winds up and absolutely CLOBBERS {target} with {{fish}}!",
+            f"🐟 {username} gently caresses {target}'s face with {{fish}}. Just kidding, it's a slap!",
+        ]
+        
+        chosen_fish = random.choice(fish)
+        response = random.choice(phrases).format(fish=chosen_fish)
+        
+        print(f"[SLAP] {username} slapped {target}")
+        
+        # Change to bot's default username for command responses
+        original_username = self.config.get('objection', 'bot_username')
+        await self.change_username_and_wait(original_username)
+        self._last_queued_username = None  # Reset so next Discord message changes username
+        
+        # Send the response to the courtroom
+        await self.send_message(response)
+        
+        # Also send the response to Discord
+        if self.discord_bot and self.discord_bot.bridge_channel:
+            embed = discord.Embed(
+                title="🐟 Fish Slap!",
+                description=response.replace("🐟 ", ""),  # Remove emoji for embed
+                color=0x3498db  # Blue like water
+            )
+            await self.discord_bot.bridge_channel.send(embed=embed)
+    
+    async def handle_roll_command(self, user_id, text):
+        """Handle !roll command - roll a number between 1-1000 (or custom range)"""
+        username = self.user_names.get(user_id, f"User-{user_id[:8]}")
+        
+        # Default range
+        max_roll = 1000
+        
+        # Try to extract a custom max from the text
+        text_lower = text.lower()
+        roll_index = text_lower.find('!roll')
+        after_roll = text[roll_index + 5:].strip()
+        
+        # Check if there's a number after !roll
+        if after_roll:
+            # Try to parse the first number found
+            import re
+            match = re.search(r'\d+', after_roll)
+            if match:
+                parsed_max = int(match.group())
+                if 1 <= parsed_max <= 1000000:  # Reasonable limit
+                    max_roll = parsed_max
+        
+        result = random.randint(1, max_roll)
+        response = f"🎲 {username} rolls {result} (1-{max_roll})"
+        
+        print(f"[ROLL] {username} rolled {result} (1-{max_roll})")
+        
+        # Change to bot's default username for command responses
+        original_username = self.config.get('objection', 'bot_username')
+        await self.change_username_and_wait(original_username)
+        self._last_queued_username = None  # Reset so next Discord message changes username
+        
+        # Send the response to the courtroom
+        await self.send_message(response)
+        
+        # Also send the response to Discord
+        if self.discord_bot and self.discord_bot.bridge_channel:
+            embed = discord.Embed(
+                title="🎲 Dice Roll",
+                description=f"**{username}** rolls **{result}** (1-{max_roll})",
+                color=0x9b59b6  # Purple color
+            )
+            await self.discord_bot.bridge_channel.send(embed=embed)
     
     async def _process_relay_queue(self):
         """
