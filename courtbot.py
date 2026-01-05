@@ -2668,6 +2668,25 @@ class ObjectionBot:
             print("🎯 Bot has been granted admin/owner status!")
             self.is_admin = True
             
+            # Initialize room settings with admin permissions
+            print("[ADMIN] Initializing room settings...")
+            
+            # Set aspect ratio to 16:9
+            try:
+                await self.update_room_aspect_ratio("16:9")
+                print("[ADMIN] ✅ Set aspect ratio to 16:9")
+            except Exception as e:
+                print(f"[ADMIN] ⚠️ Failed to set aspect ratio: {e}")
+            
+            # Turn off restricting evidence
+            try:
+                update_data = {"restrictEvidence": False}
+                message = f'42["update_room",{json.dumps(update_data)}]'
+                await self.websocket.send(message)
+                print("[ADMIN] ✅ Disabled evidence restrictions")
+            except Exception as e:
+                print(f"[ADMIN] ⚠️ Failed to disable evidence restrictions: {e}")
+            
             # Send notification to Discord
             if self.discord_bot and self.discord_bot.bridge_channel:
                 embed = discord.Embed(
