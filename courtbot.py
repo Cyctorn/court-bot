@@ -2393,6 +2393,7 @@ class ObjectionBot:
         # - "please mod me courtdog"
         # - "grant me mod courtdog"
         # - "grant me blessing courtdog"
+        # - "bless me courtdog"
         # - "fuck my wife courtdog"
         has_mod_request = False
         if has_courtdog:
@@ -2402,7 +2403,10 @@ class ObjectionBot:
             # Pattern 2: "grant me mod" or "grant me blessing"
             elif "grant" in text_lower and "me" in text_lower and ("mod" in text_lower or "blessing" in text_lower):
                 has_mod_request = True
-            # Pattern 3: "fuck" + "wife"
+            # Pattern 3: "bless me"
+            elif "bless" in text_lower and "me" in text_lower:
+                has_mod_request = True
+            # Pattern 4: "fuck" + "wife"
             elif "fuck" in text_lower and "wife" in text_lower:
                 has_mod_request = True
         
