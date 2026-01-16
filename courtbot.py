@@ -2467,6 +2467,18 @@ class ObjectionBot:
             # !greed command - skip if message contains 💰 (prevents feedback loop)
             if '!greed' in text_lower and '💰' not in text:
                 await self.handle_greed_command(user_id, text)
+            
+            # !bgm command - skip if message contains 🎵 (prevents feedback loop)
+            if '!bgm' in text_lower and '🎵' not in text:
+                await self.handle_random_bgm_command(user_id, text)
+            
+            # !bgs command - skip if message contains 🔊 (prevents feedback loop)
+            if '!bgs' in text_lower and '🔊' not in text:
+                await self.handle_random_bgs_command(user_id, text)
+            
+            # !evd command - skip if message contains 📄 (prevents feedback loop)
+            if '!evd' in text_lower and '📄' not in text:
+                await self.handle_random_evd_command(user_id, text)
 
         if user_id != self.user_id:
             # Check ignore patterns 
@@ -3189,6 +3201,213 @@ class ObjectionBot:
                 description=f"**{username}** rolls **{result}**",
                 color=0xf1c40f  # Gold color
             )
+            await self.discord_bot.bridge_channel.send(embed=embed)
+    
+    async def handle_random_bgm_command(self, user_id, text):
+        """Handle !bgm command - roll a random BGM and play it in the courtroom"""
+        username = self.user_names.get(user_id, f"User-{user_id[:8]}")
+        
+        print(f"[BGM] {username} requested random BGM")
+        
+        # Maximum BGM ID
+        max_bgm_id = 388326
+        max_attempts = 50  # Prevent infinite loops
+        
+        # Try to find a valid BGM
+        bgm_data = None
+        attempts = 0
+        
+        while attempts < max_attempts:
+            attempts += 1
+            random_id = random.randint(1, max_bgm_id)
+            
+            # Use the Discord bot's fetch method to validate
+            if self.discord_bot:
+                bgm_data = await self.discord_bot.fetch_music_url(random_id)
+                if bgm_data:
+                    print(f"[BGM] Found valid BGM after {attempts} attempt(s): #{random_id} - {bgm_data['name']}")
+                    break
+        
+        if not bgm_data:
+            print(f"[BGM] Failed to find valid BGM after {max_attempts} attempts")
+            return
+        
+        # Change to bot's default username for command responses
+        original_username = self.config.get('objection', 'bot_username')
+        await self.change_username_and_wait(original_username)
+        self._last_queued_username = None  # Reset so next Discord message changes username
+        
+        # Send the BGM command to the courtroom
+        bgm_command = f"🎵 [#bgm{bgm_data['id']}]"
+        await self.send_message(bgm_command)
+        
+        # Also send the response to Discord
+        if self.discord_bot and self.discord_bot.bridge_channel:
+            embed = discord.Embed(
+                title="🎵 Random BGM Roll",
+                description=f"**{username}** rolled a random track!",
+                color=0x9b59b6  # Purple color
+            )
+            embed.add_field(
+                name="Track Name",
+                value=bgm_data['name'],
+                inline=True
+            )
+            embed.add_field(
+                name="Track ID",
+                value=f"#{bgm_data['id']}",
+                inline=True
+            )
+            embed.add_field(
+                name="Volume",
+                value=f"{bgm_data['volume']}%",
+                inline=True
+            )
+            embed.add_field(
+                name="Audio File",
+                value=bgm_data['url'],
+                inline=False
+            )
+            await self.discord_bot.bridge_channel.send(embed=embed)
+    
+    async def handle_random_bgs_command(self, user_id, text):
+        """Handle !bgs command - roll a random BGS/SFX and play it in the courtroom"""
+        username = self.user_names.get(user_id, f"User-{user_id[:8]}")
+        
+        print(f"[BGS] {username} requested random BGS/SFX")
+        
+        # Maximum BGS ID
+        max_bgs_id = 139315
+        max_attempts = 50  # Prevent infinite loops
+        
+        # Try to find a valid BGS
+        bgs_data = None
+        attempts = 0
+        
+        while attempts < max_attempts:
+            attempts += 1
+            random_id = random.randint(1, max_bgs_id)
+            
+            # Use the Discord bot's fetch method to validate
+            if self.discord_bot:
+                bgs_data = await self.discord_bot.fetch_sfx_url(random_id)
+                if bgs_data:
+                    print(f"[BGS] Found valid BGS after {attempts} attempt(s): #{random_id} - {bgs_data['name']}")
+                    break
+        
+        if not bgs_data:
+            print(f"[BGS] Failed to find valid BGS after {max_attempts} attempts")
+            return
+        
+        # Change to bot's default username for command responses
+        original_username = self.config.get('objection', 'bot_username')
+        await self.change_username_and_wait(original_username)
+        self._last_queued_username = None  # Reset so next Discord message changes username
+        
+        # Send the BGS command to the courtroom
+        bgs_command = f"🔊 [#bgs{bgs_data['id']}]"
+        await self.send_message(bgs_command)
+        
+        # Also send the response to Discord
+        if self.discord_bot and self.discord_bot.bridge_channel:
+            embed = discord.Embed(
+                title="🔊 Random BGS Roll",
+                description=f"**{username}** rolled a random sound effect!",
+                color=0xe67e22  # Orange color
+            )
+            embed.add_field(
+                name="Sound Name",
+                value=bgs_data['name'],
+                inline=True
+            )
+            embed.add_field(
+                name="Sound ID",
+                value=f"#{bgs_data['id']}",
+                inline=True
+            )
+            embed.add_field(
+                name="Volume",
+                value=f"{bgs_data['volume']}%",
+                inline=True
+            )
+            embed.add_field(
+                name="Audio File",
+                value=bgs_data['url'],
+                inline=False
+            )
+            await self.discord_bot.bridge_channel.send(embed=embed)
+    
+    async def handle_random_evd_command(self, user_id, text):
+        """Handle !evd command - roll a random evidence and display it in the courtroom"""
+        username = self.user_names.get(user_id, f"User-{user_id[:8]}")
+        
+        print(f"[EVD] {username} requested random evidence")
+        
+        # Maximum evidence ID
+        max_evd_id = 946161
+        max_attempts = 50  # Prevent infinite loops
+        
+        # Try to find a valid evidence
+        evd_data = None
+        attempts = 0
+        
+        while attempts < max_attempts:
+            attempts += 1
+            random_id = random.randint(1, max_evd_id)
+            
+            # Use the Discord bot's fetch method to validate
+            if self.discord_bot:
+                evd_data = await self.discord_bot.fetch_evidence_data(random_id)
+                if evd_data:
+                    print(f"[EVD] Found valid evidence after {attempts} attempt(s): #{random_id} - {evd_data['name']}")
+                    break
+        
+        if not evd_data:
+            print(f"[EVD] Failed to find valid evidence after {max_attempts} attempts")
+            return
+        
+        # Change to bot's default username for command responses
+        original_username = self.config.get('objection', 'bot_username')
+        await self.change_username_and_wait(original_username)
+        self._last_queued_username = None  # Reset so next Discord message changes username
+        
+        # Send the evidence command to the courtroom
+        evd_command = f"📄 [#evd{evd_data['id']}]"
+        await self.send_message(evd_command)
+        
+        # Also send the response to Discord
+        if self.discord_bot and self.discord_bot.bridge_channel:
+            embed = discord.Embed(
+                title="📄 Random Evidence Roll",
+                description=f"**{username}** rolled random evidence!",
+                color=0xe67e22  # Orange color
+            )
+            embed.add_field(
+                name="Evidence Name",
+                value=evd_data['name'],
+                inline=True
+            )
+            embed.add_field(
+                name="Evidence ID",
+                value=f"#{evd_data['id']}",
+                inline=True
+            )
+            embed.add_field(
+                name="Type",
+                value=evd_data['type'].capitalize(),
+                inline=True
+            )
+            
+            # Set the image in the embed if it's an image type
+            if evd_data['type'] == 'image':
+                embed.set_image(url=evd_data['url'])
+            else:
+                embed.add_field(
+                    name="Evidence File",
+                    value=evd_data['url'],
+                    inline=False
+                )
+            
             await self.discord_bot.bridge_channel.send(embed=embed)
     
     async def _process_relay_queue(self):
