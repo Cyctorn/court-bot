@@ -23,6 +23,8 @@ NICKNAME_FILE = '/app/data/nicknames.json'
 COLOR_FILE = '/app/data/colors.json'
 # Character/Pose storage file
 CHARACTER_FILE = '/app/data/characters.json'
+# Autoban patterns storage file
+AUTOBAN_FILE = '/app/data/autobans.json'
 
 # Predefined color options for easy access
 PRESET_COLORS = {
@@ -107,6 +109,27 @@ def save_characters(characters):
             json.dump(characters, f, indent=2)
     except Exception as e:
         print(f"❌ Error saving characters: {e}")
+
+def load_autobans():
+    """Load autoban patterns from file"""
+    if os.path.exists(AUTOBAN_FILE):
+        try:
+            with open(AUTOBAN_FILE, 'r') as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"❌ Error loading autobans: {e}")
+            return []
+    return []
+
+def save_autobans(autobans):
+    """Save autoban patterns to file"""
+    try:
+        # Ensure the directory exists
+        os.makedirs(os.path.dirname(AUTOBAN_FILE), exist_ok=True)
+        with open(AUTOBAN_FILE, 'w') as f:
+            json.dump(autobans, f, indent=2)
+    except Exception as e:
+        print(f"❌ Error saving autobans: {e}")
 
 class Config:
     def __init__(self, config_file='/app/data/config.json'):
@@ -2050,6 +2073,9 @@ class ObjectionBot:
         self.current_mods = set()  # Set of current moderator user IDs
         self.banned_users = []  # List of banned users (only available when admin)
         
+        # Autoban patterns (regex patterns for automatic banning)
+        self.autoban_patterns = load_autobans()
+        
         # For Discord bridge compatibility and message queueing
         self._username_change_event = asyncio.Event()
         self._pending_username = None
@@ -2583,6 +2609,27 @@ class ObjectionBot:
 
                 # Don't show notification for the bot itself
                 if user_id != self.user_id:
+                    # Check autoban patterns
+                    matched_pattern = self.check_autoban(username)
+                    if matched_pattern and self.is_admin:
+                        print(f"🚫 AUTOBAN: User '{username}' matched pattern '{matched_pattern}' - banning...")
+                        
+                        # Send "Ruff (SYBAU)" message to courtroom
+                        original_username = self.config.get('objection', 'bot_username')
+                        await self.change_username_and_wait(original_username)
+                        await self.send_message("Ruff (SYBAU)")
+                        
+                        # Execute the ban
+                        await self.create_ban(user_id)
+                        
+                        # Remove from user mapping since they're banned
+                        if user_id in self.user_names:
+                            del self.user_names[user_id]
+                        
+                        return  # Don't send join notification for banned users
+                    elif matched_pattern and not self.is_admin:
+                        print(f"⚠️ AUTOBAN: User '{username}' matched pattern '{matched_pattern}' but bot is not admin - cannot ban")
+                    
                     # Always show join messages, even in non-verbose mode
                     print(f"👋 User joined: {username}")
 
@@ -2848,6 +2895,42 @@ class ObjectionBot:
         
         # Update moderators on server
         return await self.update_moderators()
+    
+    async def create_ban(self, user_id):
+        """Ban a user from the courtroom (admin only)"""
+        if not self.is_admin:
+            print("[BAN] Cannot ban user - bot is not admin")
+            return False
+        
+        if not self.connected or not self.websocket:
+            print("[BAN] Cannot ban user - not connected")
+            return False
+        
+        try:
+            # Send ban message via WebSocket
+            ban_data = {"userId": user_id}
+            message = f'42["create_ban",{json.dumps(ban_data)}]'
+            await self.websocket.send(message)
+            
+            username = self.user_names.get(user_id, f"User-{user_id[:8]}")
+            print(f"[BAN] Banned user: {username} ({user_id[:8]}...)")
+            return True
+        except Exception as e:
+            print(f"[BAN] Error banning user: {e}")
+            return False
+    
+    def check_autoban(self, username):
+        """Check if a username matches any autoban pattern"""
+        for pattern in self.autoban_patterns:
+            try:
+                # Try to match as regex pattern
+                if re.search(pattern, username, re.IGNORECASE):
+                    return pattern
+            except re.error:
+                # If regex is invalid, try exact match (case-insensitive)
+                if pattern.lower() == username.lower():
+                    return pattern
+        return None
     
     async def update_moderators(self):
         """Update the moderator list on the server"""
@@ -3981,6 +4064,95 @@ async def terminal_command_listener(objection_bot, discord_bot):
                     print("   ws 2  (ping)")
                     print("   ws 3  (pong)")
                     print("   ws 40  (handshake ack)")
+            elif cmd_lower.startswith("autoban "):
+                # Autoban pattern management commands
+                autoban_cmd = cmd[8:].strip()  # Remove "autoban " prefix
+                autoban_parts = autoban_cmd.split(" ", 1)
+                autoban_action = autoban_parts[0].lower() if autoban_parts else ""
+                autoban_arg = autoban_parts[1] if len(autoban_parts) > 1 else ""
+                
+                if autoban_action == "add" and autoban_arg:
+                    # Add a new autoban pattern
+                    pattern = autoban_arg
+                    # Validate regex pattern
+                    try:
+                        re.compile(pattern)
+                        if pattern not in objection_bot.autoban_patterns:
+                            objection_bot.autoban_patterns.append(pattern)
+                            save_autobans(objection_bot.autoban_patterns)
+                            print(f"✅ Added autoban pattern: '{pattern}'")
+                            print(f"   Total patterns: {len(objection_bot.autoban_patterns)}")
+                        else:
+                            print(f"⚠️ Pattern '{pattern}' already exists in autoban list")
+                    except re.error as e:
+                        print(f"❌ Invalid regex pattern: {e}")
+                        print("   Tip: For exact username match, just type the username")
+                        print("   Tip: For prefix match, use: ^prefix")
+                        print("   Tip: For suffix match, use: suffix$")
+                        print("   Tip: For contains match, just type the substring")
+                
+                elif autoban_action == "remove" and autoban_arg:
+                    # Remove an autoban pattern
+                    pattern = autoban_arg
+                    if pattern in objection_bot.autoban_patterns:
+                        objection_bot.autoban_patterns.remove(pattern)
+                        save_autobans(objection_bot.autoban_patterns)
+                        print(f"✅ Removed autoban pattern: '{pattern}'")
+                        print(f"   Remaining patterns: {len(objection_bot.autoban_patterns)}")
+                    else:
+                        print(f"❌ Pattern '{pattern}' not found in autoban list")
+                        if objection_bot.autoban_patterns:
+                            print("   Current patterns:")
+                            for i, p in enumerate(objection_bot.autoban_patterns, 1):
+                                print(f"      {i}. {p}")
+                
+                elif autoban_action == "list":
+                    # List all autoban patterns
+                    if objection_bot.autoban_patterns:
+                        print(f"🚫 Autoban Patterns ({len(objection_bot.autoban_patterns)}):")
+                        for i, pattern in enumerate(objection_bot.autoban_patterns, 1):
+                            print(f"   {i}. {pattern}")
+                    else:
+                        print("🚫 No autoban patterns configured")
+                        print("   Use 'autoban add <pattern>' to add one")
+                
+                elif autoban_action == "clear":
+                    # Clear all autoban patterns
+                    if objection_bot.autoban_patterns:
+                        count = len(objection_bot.autoban_patterns)
+                        objection_bot.autoban_patterns = []
+                        save_autobans(objection_bot.autoban_patterns)
+                        print(f"✅ Cleared all {count} autoban pattern(s)")
+                    else:
+                        print("⚠️ No autoban patterns to clear")
+                
+                elif autoban_action == "test" and autoban_arg:
+                    # Test if a username would be banned
+                    test_username = autoban_arg
+                    matched = objection_bot.check_autoban(test_username)
+                    if matched:
+                        print(f"🚫 Username '{test_username}' WOULD be banned")
+                        print(f"   Matched pattern: '{matched}'")
+                    else:
+                        print(f"✅ Username '{test_username}' would NOT be banned")
+                        print(f"   No patterns matched ({len(objection_bot.autoban_patterns)} patterns checked)")
+                
+                else:
+                    print("🚫 Autoban Commands:")
+                    print("  autoban add <pattern>    - Add a regex pattern to autoban list")
+                    print("  autoban remove <pattern> - Remove a pattern from autoban list")
+                    print("  autoban list             - List all autoban patterns")
+                    print("  autoban clear            - Clear all autoban patterns")
+                    print("  autoban test <username>  - Test if a username would be banned")
+                    print("\n📝 Pattern Examples:")
+                    print("  autoban add tesya        - Ban exact username 'tesya' (case-insensitive)")
+                    print("  autoban add ^tes         - Ban usernames starting with 'tes'")
+                    print("  autoban add bot$         - Ban usernames ending with 'bot'")
+                    print("  autoban add spam         - Ban usernames containing 'spam'")
+                    print("  autoban add ^test.*bot$  - Ban usernames starting with 'test' and ending with 'bot'")
+                    if not objection_bot.is_admin:
+                        print("\n⚠️ Note: Bot must be admin to execute bans")
+            
             elif cmd_lower == "help":
                 print("Available commands:")
                 print("\n🔗 Connection:")
@@ -3998,10 +4170,16 @@ async def terminal_command_listener(objection_bot, discord_bot):
                 print("  slowmode <0-60>  - Set slow mode seconds (admin only)")
                 print("  textbox <style>  - Change textbox style (admin only)")
                 print("  aspect <ratio>   - Change aspect ratio (admin only)")
-                print("\n� Advanced:")
+                print("\n🚫 Autoban Commands:")
+                print("  autoban add <pattern>    - Add autoban pattern (regex)")
+                print("  autoban remove <pattern> - Remove autoban pattern")
+                print("  autoban list             - List all autoban patterns")
+                print("  autoban clear            - Clear all patterns")
+                print("  autoban test <username>  - Test if username would be banned")
+                print("\n📡 Advanced:")
                 print("  ws <message>     - Send raw WebSocket message")
                 print("  websocket <msg>  - Send raw WebSocket message (alias)")
-                print("\n�🛠️ Utility:")
+                print("\n🛠️ Utility:")
                 print("  config           - Show current configuration")
                 print("  debug            - Show debug information")
                 print("  clear            - Clear terminal screen")
