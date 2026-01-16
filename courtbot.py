@@ -2772,17 +2772,9 @@ class ObjectionBot:
                     # Check autoban patterns
                     matched_pattern = self.check_autoban(username)
                     if matched_pattern and self.is_admin:
-                        print(f"🚫 AUTOBAN: User '{username}' matched pattern '{matched_pattern}' - banning in 3 seconds...")
+                        print(f"🚫 AUTOBAN: User '{username}' matched pattern '{matched_pattern}' - banning immediately...")
                         
-                        # 3-second grace period before banning
-                        await asyncio.sleep(3)
-                        
-                        # Check if user is still in the room (they might have left during grace period)
-                        if user_id not in self.user_names:
-                            print(f"🚫 AUTOBAN: User '{username}' left before ban could be executed")
-                            return
-                        
-                        # Send "Ruff (Banning undesirable)" message to courtroom
+                        # Send "Ruff (Banned undesirable)" message to courtroom
                         original_username = self.config.get('objection', 'bot_username')
                         await self.change_username_and_wait(original_username)
                         await self.send_message("Ruff (Banned undesirable)")
