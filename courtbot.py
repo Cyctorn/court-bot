@@ -319,8 +319,13 @@ class DiscordCourtBot(discord.Client):
         self._evidence_pattern = re.compile(r'\[#evdi?(\d+)\]')
         self._color_code_pattern = re.compile(r'\[#/[a-zA-Z]\]|\[#/c[a-fA-F0-9]{6}\]|\[/#\]|\[#ts\d+\]')
     
-    async def fetch_music_url(self, bgm_id):
-        """Fetch the actual external URL for a BGM ID from objection.lol's API"""
+    async def fetch_music_url(self, bgm_id, validate_url=False):
+        """Fetch the actual external URL for a BGM ID from objection.lol's API
+        
+        Args:
+            bgm_id: The BGM ID to fetch
+            validate_url: If True, also verify the external URL is accessible (for random rolls)
+        """
         try:
             # Use the correct API endpoint discovered from testing
             api_url = f"https://objection.lol/api/assets/music/{bgm_id}"
@@ -338,6 +343,24 @@ class DiscordCourtBot(discord.Client):
                             # Handle relative URLs by converting them to full objection.lol URLs
                             if external_url.startswith('/'):
                                 external_url = f"https://objection.lol{external_url}"
+                            
+                            # If validation is requested, verify the external URL is accessible
+                            if validate_url:
+                                try:
+                                    # Use HEAD request to check if URL is accessible without downloading
+                                    async with session.head(external_url, allow_redirects=True, timeout=aiohttp.ClientTimeout(total=5)) as url_check:
+                                        if url_check.status == 404:
+                                            log_verbose(f"❌ BGM {bgm_id} URL returns 404: {external_url}")
+                                            return None
+                                        elif url_check.status >= 400:
+                                            log_verbose(f"❌ BGM {bgm_id} URL returns error {url_check.status}: {external_url}")
+                                            return None
+                                except asyncio.TimeoutError:
+                                    log_verbose(f"⚠️ BGM {bgm_id} URL timeout, assuming valid: {external_url}")
+                                    # Don't fail on timeout - the URL might still work
+                                except Exception as url_error:
+                                    log_verbose(f"⚠️ BGM {bgm_id} URL check failed: {url_error}")
+                                    # Don't fail on other errors - the URL might still work
                             
                             print(f"🎵 Found music for BGM {bgm_id}: '{music_name}' -> {external_url}")
                             return {
@@ -364,8 +387,13 @@ class DiscordCourtBot(discord.Client):
         matches = self._bgm_pattern.findall(text)
         return matches
 
-    async def fetch_sfx_url(self, sfx_id):
-        """Fetch the actual external URL for a SFX ID from objection.lol's API"""
+    async def fetch_sfx_url(self, sfx_id, validate_url=False):
+        """Fetch the actual external URL for a SFX ID from objection.lol's API
+        
+        Args:
+            sfx_id: The SFX ID to fetch
+            validate_url: If True, also verify the external URL is accessible (for random rolls)
+        """
         try:
             # Use the sound effect API endpoint
             api_url = f"https://objection.lol/api/assets/sound/{sfx_id}"
@@ -383,6 +411,24 @@ class DiscordCourtBot(discord.Client):
                             # Handle relative URLs by converting them to full objection.lol URLs
                             if external_url.startswith('/'):
                                 external_url = f"https://objection.lol{external_url}"
+                            
+                            # If validation is requested, verify the external URL is accessible
+                            if validate_url:
+                                try:
+                                    # Use HEAD request to check if URL is accessible without downloading
+                                    async with session.head(external_url, allow_redirects=True, timeout=aiohttp.ClientTimeout(total=5)) as url_check:
+                                        if url_check.status == 404:
+                                            log_verbose(f"❌ SFX {sfx_id} URL returns 404: {external_url}")
+                                            return None
+                                        elif url_check.status >= 400:
+                                            log_verbose(f"❌ SFX {sfx_id} URL returns error {url_check.status}: {external_url}")
+                                            return None
+                                except asyncio.TimeoutError:
+                                    log_verbose(f"⚠️ SFX {sfx_id} URL timeout, assuming valid: {external_url}")
+                                    # Don't fail on timeout - the URL might still work
+                                except Exception as url_error:
+                                    log_verbose(f"⚠️ SFX {sfx_id} URL check failed: {url_error}")
+                                    # Don't fail on other errors - the URL might still work
                             
                             print(f"🔊 Found sound effect for SFX {sfx_id}: '{sfx_name}' -> {external_url}")
                             return {
@@ -414,8 +460,13 @@ class DiscordCourtBot(discord.Client):
         matches = self._evidence_pattern.findall(text)
         return matches
 
-    async def fetch_evidence_data(self, evidence_id):
-        """Fetch evidence data from objection.lol's API by evidence ID"""
+    async def fetch_evidence_data(self, evidence_id, validate_url=False):
+        """Fetch evidence data from objection.lol's API by evidence ID
+        
+        Args:
+            evidence_id: The evidence ID to fetch
+            validate_url: If True, also verify the external URL is accessible (for random rolls)
+        """
         try:
             # Use the evidence API endpoint
             api_url = f"https://objection.lol/api/assets/evidence/{evidence_id}"
@@ -434,6 +485,24 @@ class DiscordCourtBot(discord.Client):
                             # Handle relative URLs by converting them to full objection.lol URLs
                             if evidence_url.startswith('/'):
                                 evidence_url = f"https://objection.lol{evidence_url}"
+                            
+                            # If validation is requested, verify the external URL is accessible
+                            if validate_url:
+                                try:
+                                    # Use HEAD request to check if URL is accessible without downloading
+                                    async with session.head(evidence_url, allow_redirects=True, timeout=aiohttp.ClientTimeout(total=5)) as url_check:
+                                        if url_check.status == 404:
+                                            log_verbose(f"❌ Evidence {evidence_id} URL returns 404: {evidence_url}")
+                                            return None
+                                        elif url_check.status >= 400:
+                                            log_verbose(f"❌ Evidence {evidence_id} URL returns error {url_check.status}: {evidence_url}")
+                                            return None
+                                except asyncio.TimeoutError:
+                                    log_verbose(f"⚠️ Evidence {evidence_id} URL timeout, assuming valid: {evidence_url}")
+                                    # Don't fail on timeout - the URL might still work
+                                except Exception as url_error:
+                                    log_verbose(f"⚠️ Evidence {evidence_id} URL check failed: {url_error}")
+                                    # Don't fail on other errors - the URL might still work
                             
                             print(f"📄 Found evidence {evidence_id}: '{evidence_name}' -> {evidence_url}")
                             return {
@@ -3222,8 +3291,9 @@ class ObjectionBot:
             random_id = random.randint(1, max_bgm_id)
             
             # Use the Discord bot's fetch method to validate
+            # Pass validate_url=True to also check if the source URL is accessible
             if self.discord_bot:
-                bgm_data = await self.discord_bot.fetch_music_url(random_id)
+                bgm_data = await self.discord_bot.fetch_music_url(random_id, validate_url=True)
                 if bgm_data:
                     print(f"[BGM] Found valid BGM after {attempts} attempt(s): #{random_id} - {bgm_data['name']}")
                     break
@@ -3289,8 +3359,9 @@ class ObjectionBot:
             random_id = random.randint(1, max_bgs_id)
             
             # Use the Discord bot's fetch method to validate
+            # Pass validate_url=True to also check if the source URL is accessible
             if self.discord_bot:
-                bgs_data = await self.discord_bot.fetch_sfx_url(random_id)
+                bgs_data = await self.discord_bot.fetch_sfx_url(random_id, validate_url=True)
                 if bgs_data:
                     print(f"[BGS] Found valid BGS after {attempts} attempt(s): #{random_id} - {bgs_data['name']}")
                     break
@@ -3356,8 +3427,9 @@ class ObjectionBot:
             random_id = random.randint(1, max_evd_id)
             
             # Use the Discord bot's fetch method to validate
+            # Pass validate_url=True to also check if the external URL is accessible
             if self.discord_bot:
-                evd_data = await self.discord_bot.fetch_evidence_data(random_id)
+                evd_data = await self.discord_bot.fetch_evidence_data(random_id, validate_url=True)
                 if evd_data:
                     print(f"[EVD] Found valid evidence after {attempts} attempt(s): #{random_id} - {evd_data['name']}")
                     break
