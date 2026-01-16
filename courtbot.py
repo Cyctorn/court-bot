@@ -376,6 +376,14 @@ class DiscordCourtBot(discord.Client):
                                 except asyncio.TimeoutError:
                                     log_verbose(f"⚠️ BGM {bgm_id} URL timeout, assuming valid: {external_url}")
                                     # Don't fail on timeout - the URL might still work
+                                except aiohttp.ClientConnectorError as conn_error:
+                                    # DNS resolution failure, connection refused, etc. - definitely invalid
+                                    log_verbose(f"❌ BGM {bgm_id} URL connection failed (DNS/network error): {conn_error}")
+                                    return None
+                                except aiohttp.ClientError as client_error:
+                                    # Other client errors - likely invalid
+                                    log_verbose(f"❌ BGM {bgm_id} URL client error: {client_error}")
+                                    return None
                                 except Exception as url_error:
                                     log_verbose(f"⚠️ BGM {bgm_id} URL check failed: {url_error}")
                                     # Don't fail on other errors - the URL might still work
@@ -462,6 +470,14 @@ class DiscordCourtBot(discord.Client):
                                 except asyncio.TimeoutError:
                                     log_verbose(f"⚠️ SFX {sfx_id} URL timeout, assuming valid: {external_url}")
                                     # Don't fail on timeout - the URL might still work
+                                except aiohttp.ClientConnectorError as conn_error:
+                                    # DNS resolution failure, connection refused, etc. - definitely invalid
+                                    log_verbose(f"❌ SFX {sfx_id} URL connection failed (DNS/network error): {conn_error}")
+                                    return None
+                                except aiohttp.ClientError as client_error:
+                                    # Other client errors - likely invalid
+                                    log_verbose(f"❌ SFX {sfx_id} URL client error: {client_error}")
+                                    return None
                                 except Exception as url_error:
                                     log_verbose(f"⚠️ SFX {sfx_id} URL check failed: {url_error}")
                                     # Don't fail on other errors - the URL might still work
@@ -534,19 +550,20 @@ class DiscordCourtBot(discord.Client):
                                             log_verbose(f"❌ Evidence {evidence_id} URL returns error {url_check.status}: {evidence_url}")
                                             return None
                                         
-                                        # Check Content-Type to ensure it's actually an image file
+                                        # Check Content-Type to ensure it's actually an image or video file
                                         content_type = url_check.headers.get('Content-Type', '').lower()
-                                        valid_image_types = ['image/']
-                                        if content_type and not any(t in content_type for t in valid_image_types):
-                                            log_verbose(f"❌ Evidence {evidence_id} URL is not an image (Content-Type: {content_type}): {evidence_url}")
+                                        valid_media_types = ['image/', 'video/']
+                                        if content_type and not any(t in content_type for t in valid_media_types):
+                                            log_verbose(f"❌ Evidence {evidence_id} URL is not an image/video (Content-Type: {content_type}): {evidence_url}")
                                             return None
                                         
-                                        # Check Content-Length to ensure file has reasonable size (> 1KB)
+                                        # Check Content-Length to ensure file has reasonable size
+                                        # For images/videos, require at least 5KB to filter out error placeholders
                                         content_length = url_check.headers.get('Content-Length')
                                         if content_length:
                                             try:
                                                 size = int(content_length)
-                                                if size < 1024:  # Less than 1KB is likely invalid
+                                                if size < 5120:  # Less than 5KB is likely an error placeholder
                                                     log_verbose(f"❌ Evidence {evidence_id} URL file too small ({size} bytes): {evidence_url}")
                                                     return None
                                             except ValueError:
@@ -554,6 +571,14 @@ class DiscordCourtBot(discord.Client):
                                 except asyncio.TimeoutError:
                                     log_verbose(f"⚠️ Evidence {evidence_id} URL timeout, assuming valid: {evidence_url}")
                                     # Don't fail on timeout - the URL might still work
+                                except aiohttp.ClientConnectorError as conn_error:
+                                    # DNS resolution failure, connection refused, etc. - definitely invalid
+                                    log_verbose(f"❌ Evidence {evidence_id} URL connection failed (DNS/network error): {conn_error}")
+                                    return None
+                                except aiohttp.ClientError as client_error:
+                                    # Other client errors - likely invalid
+                                    log_verbose(f"❌ Evidence {evidence_id} URL client error: {client_error}")
+                                    return None
                                 except Exception as url_error:
                                     log_verbose(f"⚠️ Evidence {evidence_id} URL check failed: {url_error}")
                                     # Don't fail on other errors - the URL might still work
@@ -2747,12 +2772,20 @@ class ObjectionBot:
                     # Check autoban patterns
                     matched_pattern = self.check_autoban(username)
                     if matched_pattern and self.is_admin:
-                        print(f"🚫 AUTOBAN: User '{username}' matched pattern '{matched_pattern}' - banning...")
+                        print(f"🚫 AUTOBAN: User '{username}' matched pattern '{matched_pattern}' - banning in 3 seconds...")
                         
-                        # Send "Ruff (SYBAU)" message to courtroom
+                        # 3-second grace period before banning
+                        await asyncio.sleep(3)
+                        
+                        # Check if user is still in the room (they might have left during grace period)
+                        if user_id not in self.user_names:
+                            print(f"🚫 AUTOBAN: User '{username}' left before ban could be executed")
+                            return
+                        
+                        # Send "Ruff (Banning undesirable)" message to courtroom
                         original_username = self.config.get('objection', 'bot_username')
                         await self.change_username_and_wait(original_username)
-                        await self.send_message("Ruff (SYBAU)")
+                        await self.send_message("Ruff (Banned undesirable)")
                         
                         # Execute the ban
                         await self.create_ban(user_id)
@@ -3334,26 +3367,35 @@ class ObjectionBot:
         
         # Maximum BGM ID
         max_bgm_id = 388326
-        max_attempts = 50  # Prevent infinite loops
+        batch_size = 10  # Check 10 IDs in parallel per batch
+        max_batches = 5  # Maximum 5 batches (50 total attempts)
         
-        # Try to find a valid BGM
+        # Try to find a valid BGM using parallel validation
         bgm_data = None
-        attempts = 0
+        total_attempts = 0
         
-        while attempts < max_attempts:
-            attempts += 1
-            random_id = random.randint(1, max_bgm_id)
+        for batch_num in range(max_batches):
+            # Generate a batch of random IDs
+            random_ids = [random.randint(1, max_bgm_id) for _ in range(batch_size)]
+            total_attempts += batch_size
             
-            # Use the Discord bot's fetch method to validate
-            # Pass validate_url=True to also check if the source URL is accessible
+            # Validate all IDs in parallel
             if self.discord_bot:
-                bgm_data = await self.discord_bot.fetch_music_url(random_id, validate_url=True)
+                tasks = [self.discord_bot.fetch_music_url(rid, validate_url=True) for rid in random_ids]
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                
+                # Find the first valid result
+                for i, result in enumerate(results):
+                    if result and not isinstance(result, Exception):
+                        bgm_data = result
+                        print(f"[BGM] Found valid BGM after {batch_num * batch_size + i + 1} attempt(s): #{random_ids[i]} - {bgm_data['name']}")
+                        break
+                
                 if bgm_data:
-                    print(f"[BGM] Found valid BGM after {attempts} attempt(s): #{random_id} - {bgm_data['name']}")
                     break
         
         if not bgm_data:
-            print(f"[BGM] Failed to find valid BGM after {max_attempts} attempts")
+            print(f"[BGM] Failed to find valid BGM after {total_attempts} attempts")
             return
         
         # Change to bot's default username for command responses
@@ -3402,26 +3444,35 @@ class ObjectionBot:
         
         # Maximum BGS ID
         max_bgs_id = 139315
-        max_attempts = 50  # Prevent infinite loops
+        batch_size = 10  # Check 10 IDs in parallel per batch
+        max_batches = 5  # Maximum 5 batches (50 total attempts)
         
-        # Try to find a valid BGS
+        # Try to find a valid BGS using parallel validation
         bgs_data = None
-        attempts = 0
+        total_attempts = 0
         
-        while attempts < max_attempts:
-            attempts += 1
-            random_id = random.randint(1, max_bgs_id)
+        for batch_num in range(max_batches):
+            # Generate a batch of random IDs
+            random_ids = [random.randint(1, max_bgs_id) for _ in range(batch_size)]
+            total_attempts += batch_size
             
-            # Use the Discord bot's fetch method to validate
-            # Pass validate_url=True to also check if the source URL is accessible
+            # Validate all IDs in parallel
             if self.discord_bot:
-                bgs_data = await self.discord_bot.fetch_sfx_url(random_id, validate_url=True)
+                tasks = [self.discord_bot.fetch_sfx_url(rid, validate_url=True) for rid in random_ids]
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                
+                # Find the first valid result
+                for i, result in enumerate(results):
+                    if result and not isinstance(result, Exception):
+                        bgs_data = result
+                        print(f"[BGS] Found valid BGS after {batch_num * batch_size + i + 1} attempt(s): #{random_ids[i]} - {bgs_data['name']}")
+                        break
+                
                 if bgs_data:
-                    print(f"[BGS] Found valid BGS after {attempts} attempt(s): #{random_id} - {bgs_data['name']}")
                     break
         
         if not bgs_data:
-            print(f"[BGS] Failed to find valid BGS after {max_attempts} attempts")
+            print(f"[BGS] Failed to find valid BGS after {total_attempts} attempts")
             return
         
         # Change to bot's default username for command responses
@@ -3470,26 +3521,35 @@ class ObjectionBot:
         
         # Maximum evidence ID
         max_evd_id = 946161
-        max_attempts = 50  # Prevent infinite loops
+        batch_size = 10  # Check 10 IDs in parallel per batch
+        max_batches = 5  # Maximum 5 batches (50 total attempts)
         
-        # Try to find a valid evidence
+        # Try to find a valid evidence using parallel validation
         evd_data = None
-        attempts = 0
+        total_attempts = 0
         
-        while attempts < max_attempts:
-            attempts += 1
-            random_id = random.randint(1, max_evd_id)
+        for batch_num in range(max_batches):
+            # Generate a batch of random IDs
+            random_ids = [random.randint(1, max_evd_id) for _ in range(batch_size)]
+            total_attempts += batch_size
             
-            # Use the Discord bot's fetch method to validate
-            # Pass validate_url=True to also check if the external URL is accessible
+            # Validate all IDs in parallel
             if self.discord_bot:
-                evd_data = await self.discord_bot.fetch_evidence_data(random_id, validate_url=True)
+                tasks = [self.discord_bot.fetch_evidence_data(rid, validate_url=True) for rid in random_ids]
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                
+                # Find the first valid result
+                for i, result in enumerate(results):
+                    if result and not isinstance(result, Exception):
+                        evd_data = result
+                        print(f"[EVD] Found valid evidence after {batch_num * batch_size + i + 1} attempt(s): #{random_ids[i]} - {evd_data['name']}")
+                        break
+                
                 if evd_data:
-                    print(f"[EVD] Found valid evidence after {attempts} attempt(s): #{random_id} - {evd_data['name']}")
                     break
         
         if not evd_data:
-            print(f"[EVD] Failed to find valid evidence after {max_attempts} attempts")
+            print(f"[EVD] Failed to find valid evidence after {total_attempts} attempts")
             return
         
         # Change to bot's default username for command responses
