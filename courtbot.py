@@ -355,6 +355,24 @@ class DiscordCourtBot(discord.Client):
                                         elif url_check.status >= 400:
                                             log_verbose(f"❌ BGM {bgm_id} URL returns error {url_check.status}: {external_url}")
                                             return None
+                                        
+                                        # Check Content-Type to ensure it's actually an audio file
+                                        content_type = url_check.headers.get('Content-Type', '').lower()
+                                        valid_audio_types = ['audio/', 'application/ogg', 'application/octet-stream']
+                                        if content_type and not any(t in content_type for t in valid_audio_types):
+                                            log_verbose(f"❌ BGM {bgm_id} URL is not audio (Content-Type: {content_type}): {external_url}")
+                                            return None
+                                        
+                                        # Check Content-Length to ensure file has reasonable size (> 1KB)
+                                        content_length = url_check.headers.get('Content-Length')
+                                        if content_length:
+                                            try:
+                                                size = int(content_length)
+                                                if size < 1024:  # Less than 1KB is likely invalid
+                                                    log_verbose(f"❌ BGM {bgm_id} URL file too small ({size} bytes): {external_url}")
+                                                    return None
+                                            except ValueError:
+                                                pass  # Ignore invalid Content-Length header
                                 except asyncio.TimeoutError:
                                     log_verbose(f"⚠️ BGM {bgm_id} URL timeout, assuming valid: {external_url}")
                                     # Don't fail on timeout - the URL might still work
@@ -423,6 +441,24 @@ class DiscordCourtBot(discord.Client):
                                         elif url_check.status >= 400:
                                             log_verbose(f"❌ SFX {sfx_id} URL returns error {url_check.status}: {external_url}")
                                             return None
+                                        
+                                        # Check Content-Type to ensure it's actually an audio file
+                                        content_type = url_check.headers.get('Content-Type', '').lower()
+                                        valid_audio_types = ['audio/', 'application/ogg', 'application/octet-stream']
+                                        if content_type and not any(t in content_type for t in valid_audio_types):
+                                            log_verbose(f"❌ SFX {sfx_id} URL is not audio (Content-Type: {content_type}): {external_url}")
+                                            return None
+                                        
+                                        # Check Content-Length to ensure file has reasonable size (> 1KB)
+                                        content_length = url_check.headers.get('Content-Length')
+                                        if content_length:
+                                            try:
+                                                size = int(content_length)
+                                                if size < 1024:  # Less than 1KB is likely invalid
+                                                    log_verbose(f"❌ SFX {sfx_id} URL file too small ({size} bytes): {external_url}")
+                                                    return None
+                                            except ValueError:
+                                                pass  # Ignore invalid Content-Length header
                                 except asyncio.TimeoutError:
                                     log_verbose(f"⚠️ SFX {sfx_id} URL timeout, assuming valid: {external_url}")
                                     # Don't fail on timeout - the URL might still work
@@ -497,6 +533,24 @@ class DiscordCourtBot(discord.Client):
                                         elif url_check.status >= 400:
                                             log_verbose(f"❌ Evidence {evidence_id} URL returns error {url_check.status}: {evidence_url}")
                                             return None
+                                        
+                                        # Check Content-Type to ensure it's actually an image file
+                                        content_type = url_check.headers.get('Content-Type', '').lower()
+                                        valid_image_types = ['image/']
+                                        if content_type and not any(t in content_type for t in valid_image_types):
+                                            log_verbose(f"❌ Evidence {evidence_id} URL is not an image (Content-Type: {content_type}): {evidence_url}")
+                                            return None
+                                        
+                                        # Check Content-Length to ensure file has reasonable size (> 1KB)
+                                        content_length = url_check.headers.get('Content-Length')
+                                        if content_length:
+                                            try:
+                                                size = int(content_length)
+                                                if size < 1024:  # Less than 1KB is likely invalid
+                                                    log_verbose(f"❌ Evidence {evidence_id} URL file too small ({size} bytes): {evidence_url}")
+                                                    return None
+                                            except ValueError:
+                                                pass  # Ignore invalid Content-Length header
                                 except asyncio.TimeoutError:
                                     log_verbose(f"⚠️ Evidence {evidence_id} URL timeout, assuming valid: {evidence_url}")
                                     # Don't fail on timeout - the URL might still work
