@@ -3079,6 +3079,54 @@ class ObjectionBot:
             print(f"[BAN] Error banning user: {e}")
             return False
     
+    async def remove_ban(self, user_id):
+        """Unban a user from the courtroom (admin only)
+        
+        Uses the update_room_admin WebSocket message to update the ban list.
+        Format: 42["update_room_admin",{"bans":[...],"password":"","autoTransferAdmin":true},"roomCode"]
+        """
+        if not self.is_admin:
+            print("[UNBAN] Cannot unban user - bot is not admin")
+            return False
+        
+        if not self.connected or not self.websocket:
+            print("[UNBAN] Cannot unban user - not connected")
+            return False
+        
+        try:
+            # Find and remove the user from the banned_users list
+            user_to_unban = None
+            for ban in self.banned_users:
+                if ban.get('id') == user_id:
+                    user_to_unban = ban
+                    break
+            
+            if not user_to_unban:
+                print(f"[UNBAN] User ID {user_id[:8]}... not found in ban list")
+                return False
+            
+            # Create new ban list without the unbanned user
+            new_bans = [ban for ban in self.banned_users if ban.get('id') != user_id]
+            
+            # Send update_room_admin message with the new ban list
+            # Format: 42["update_room_admin",{"bans":[{"id":"...","username":"..."},...],"password":"","autoTransferAdmin":true},"roomCode"]
+            update_data = {
+                "bans": new_bans,
+                "password": "",  # Keep existing password (empty string means no change)
+                "autoTransferAdmin": True  # Keep auto-transfer enabled
+            }
+            message = f'42["update_room_admin",{json.dumps(update_data)},"{self.room_id}"]'
+            await self.websocket.send(message)
+            
+            # Update local ban list
+            username = user_to_unban.get('username', f"User-{user_id[:8]}")
+            self.banned_users = new_bans
+            print(f"[UNBAN] Unbanned user: {username} ({user_id[:8]}...)")
+            return True
+        except Exception as e:
+            print(f"[UNBAN] Error unbanning user: {e}")
+            return False
+    
     def check_autoban(self, username):
         """Check if a username matches any autoban pattern"""
         for pattern in self.autoban_patterns:
@@ -4550,6 +4598,94 @@ async def terminal_command_listener(objection_bot, discord_bot):
                     if not objection_bot.is_admin:
                         print("\n⚠️ Note: Bot must be admin to execute bans")
             
+            elif cmd_lower == "bans":
+                # Show current ban list
+                if objection_bot.connected:
+                    # Refresh room data to get latest ban list
+                    print("🔄 Refreshing ban list...")
+                    await objection_bot.refresh_room_data()
+                    await asyncio.sleep(0.5)  # Wait for response
+                    
+                    if objection_bot.banned_users:
+                        print(f"🚫 Banned Users ({len(objection_bot.banned_users)}):")
+                        for i, ban in enumerate(objection_bot.banned_users, 1):
+                            username = ban.get('username', 'Unknown')
+                            user_id = ban.get('id', 'Unknown')
+                            print(f"   {i}. {username} (ID: {user_id[:8]}...)")
+                    else:
+                        if objection_bot.is_admin:
+                            print("🚫 No users are currently banned from this courtroom.")
+                        else:
+                            print("🚫 No ban data available. Bot must be admin to view ban list.")
+                    
+                    if not objection_bot.is_admin:
+                        print("⚠️ Note: Ban list may not be accurate - bot is not admin")
+                else:
+                    print("❌ Not connected to objection.lol. Use 'reconnect' first.")
+            
+            elif cmd_lower.startswith("ban "):
+                # Ban a user by username
+                username_to_ban = cmd[4:].strip()  # Remove "ban " prefix
+                if username_to_ban:
+                    if objection_bot.connected:
+                        if objection_bot.is_admin:
+                            # Find user ID by username
+                            user_id = objection_bot.get_user_id_by_username(username_to_ban)
+                            if user_id:
+                                print(f"🚫 Banning user '{username_to_ban}' (ID: {user_id[:8]}...)")
+                                success = await objection_bot.create_ban(user_id)
+                                if success:
+                                    print(f"✅ Successfully banned '{username_to_ban}'")
+                                else:
+                                    print(f"❌ Failed to ban '{username_to_ban}'")
+                            else:
+                                print(f"❌ User '{username_to_ban}' not found in courtroom.")
+                                print("   Note: User must be in the room to ban them.")
+                                print("   Current users:")
+                                for uid, uname in objection_bot.user_names.items():
+                                    print(f"      - {uname}")
+                        else:
+                            print("❌ Bot is not admin. Cannot ban users.")
+                    else:
+                        print("❌ Not connected to objection.lol. Use 'reconnect' first.")
+                else:
+                    print("❌ Please provide a username after 'ban'. Example: ban TrollUser")
+            
+            elif cmd_lower.startswith("unban "):
+                # Unban a user by username
+                username_to_unban = cmd[6:].strip()  # Remove "unban " prefix
+                if username_to_unban:
+                    if objection_bot.connected:
+                        if objection_bot.is_admin:
+                            # Find the user in the ban list
+                            ban_to_remove = None
+                            for ban in objection_bot.banned_users:
+                                if ban.get('username', '').lower() == username_to_unban.lower():
+                                    ban_to_remove = ban
+                                    break
+                            
+                            if ban_to_remove:
+                                print(f"🔓 Unbanning user '{ban_to_remove.get('username')}' (ID: {ban_to_remove.get('id', '')[:8]}...)")
+                                success = await objection_bot.remove_ban(ban_to_remove.get('id'))
+                                if success:
+                                    print(f"✅ Successfully unbanned '{ban_to_remove.get('username')}'")
+                                else:
+                                    print(f"❌ Failed to unban '{username_to_unban}'")
+                            else:
+                                print(f"❌ User '{username_to_unban}' not found in ban list.")
+                                if objection_bot.banned_users:
+                                    print("   Currently banned users:")
+                                    for ban in objection_bot.banned_users:
+                                        print(f"      - {ban.get('username', 'Unknown')}")
+                                else:
+                                    print("   No users are currently banned.")
+                        else:
+                            print("❌ Bot is not admin. Cannot unban users.")
+                    else:
+                        print("❌ Not connected to objection.lol. Use 'reconnect' first.")
+                else:
+                    print("❌ Please provide a username after 'unban'. Example: unban TrollUser")
+            
             elif cmd_lower == "help":
                 print("Available commands:")
                 print("\n🔗 Connection:")
@@ -4567,7 +4703,11 @@ async def terminal_command_listener(objection_bot, discord_bot):
                 print("  slowmode <0-60>  - Set slow mode seconds (admin only)")
                 print("  textbox <style>  - Change textbox style (admin only)")
                 print("  aspect <ratio>   - Change aspect ratio (admin only)")
-                print("\n🚫 Autoban Commands:")
+                print("\n🚫 Ban Management:")
+                print("  bans             - Show banned users list")
+                print("  ban <username>   - Ban a user (admin only)")
+                print("  unban <username> - Unban a user (admin only)")
+                print("\n🤖 Autoban Commands:")
                 print("  autoban add <pattern>    - Add autoban pattern (regex)")
                 print("  autoban remove <pattern> - Remove autoban pattern")
                 print("  autoban list             - List all autoban patterns")
