@@ -2371,6 +2371,18 @@ class ObjectionBot:
                     except json.JSONDecodeError as e:
                         print(f"JSON decode error for message: {e}")
             
+            elif message.startswith('42["plain_message"'):
+                # Handle plain messages (no avatar/character)
+                start = message.find('[')
+                if start > 0:
+                    json_str = message[start:]
+                    try:
+                        data = json.loads(json_str)
+                        if len(data) > 1 and isinstance(data[1], dict):
+                            await self.handle_plain_message(data[1])
+                    except json.JSONDecodeError as e:
+                        print(f"JSON decode error for plain message: {e}")
+            
             elif message.startswith('42["update_room"'):
                 # Handle room updates
                 start = message.find('[')
@@ -2664,6 +2676,43 @@ class ObjectionBot:
                 character_id = message.get('characterId')
                 pose_id = message.get('poseId')
                 self.queue_discord_message(username, text, character_id, pose_id)
+    
+    async def handle_plain_message(self, data):
+        """Handle plain messages (without avatar/character info)"""
+        user_id = data.get('userId')
+        text = data.get('text', '')
+        
+        if user_id != self.user_id:
+            # Check ignore patterns
+            ignore_patterns = self.config.get('settings', 'ignore_patterns')
+            if any(pattern in text for pattern in ignore_patterns):
+                return
+            
+            # Ignore messages with Discord user mentions (<@numbers>)
+            if self._mention_pattern.search(text):
+                log_verbose(f"🚫 Ignoring objection.lol plain message with user mention: {text[:50]}...")
+                return
+            
+            # Get username from our stored mapping
+            username = self.user_names.get(user_id)
+            # If we don't have the username, request room update and wait for response
+            if username is None:
+                log_verbose(f"🔄 Unknown user {user_id[:8]}, requesting room update...")
+                await self.websocket.send('42["get_room"]')
+                # Wait a moment for the room update to be processed
+                await asyncio.sleep(0.5)
+                # Try again after the refresh
+                username = self.user_names.get(user_id)
+                if username is None:
+                    # Still unknown after refresh, use fallback
+                    username = f"User-{user_id[:8]}"
+                    log_verbose(f"⚠️ User {user_id[:8]} still unknown after refresh, using fallback: {username}")
+                else:
+                    log_verbose(f"✅ Found username after refresh: {username}")
+            log_verbose(f"📨 Received (plain): {username}: {text}")
+            # Queue message for Discord - plain messages don't have character/pose info
+            if self.discord_bot:
+                self.queue_discord_message(username, text, None, None)
     
     async def handle_room_update(self, data):
         """Handle room updates to get user information"""
