@@ -22,6 +22,13 @@ NICKNAME_FILE = '/app/data/nicknames.json'
 COLOR_FILE = '/app/data/colors.json'
 # Character/Pose storage file
 CHARACTER_FILE = '/app/data/characters.json'
+<<<<<<< Updated upstream
+=======
+# Autoban patterns storage file
+AUTOBAN_FILE = '/app/data/autobans.json'
+# Ping aliases storage file (for courtroom->Discord pings)
+PING_ALIASES_FILE = '/app/data/ping_aliases.json'
+>>>>>>> Stashed changes
 
 # Predefined color options for easy access
 PRESET_COLORS = {
@@ -107,6 +114,50 @@ def save_characters(characters):
     except Exception as e:
         print(f"❌ Error saving characters: {e}")
 
+<<<<<<< Updated upstream
+=======
+def load_autobans():
+    """Load autoban patterns from file"""
+    if os.path.exists(AUTOBAN_FILE):
+        try:
+            with open(AUTOBAN_FILE, 'r') as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"❌ Error loading autobans: {e}")
+            return []
+    return []
+
+def save_autobans(autobans):
+    """Save autoban patterns to file"""
+    try:
+        # Ensure the directory exists
+        os.makedirs(os.path.dirname(AUTOBAN_FILE), exist_ok=True)
+        with open(AUTOBAN_FILE, 'w') as f:
+            json.dump(autobans, f, indent=2)
+    except Exception as e:
+        print(f"❌ Error saving autobans: {e}")
+
+def load_ping_aliases():
+    """Load ping aliases from file"""
+    if os.path.exists(PING_ALIASES_FILE):
+        try:
+            with open(PING_ALIASES_FILE, 'r') as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"❌ Error loading ping aliases: {e}")
+            return {}
+    return {}
+
+def save_ping_aliases(ping_aliases):
+    """Save ping aliases to file"""
+    try:
+        os.makedirs(os.path.dirname(PING_ALIASES_FILE), exist_ok=True)
+        with open(PING_ALIASES_FILE, 'w') as f:
+            json.dump(ping_aliases, f, indent=2)
+    except Exception as e:
+        print(f"❌ Error saving ping aliases: {e}")
+
+>>>>>>> Stashed changes
 class Config:
     def __init__(self, config_file='/app/data/config.json'):
         self.config_file = config_file
@@ -193,6 +244,10 @@ class Config:
             verbose_str = os.getenv('VERBOSE').lower()
             self.data['settings']['verbose'] = verbose_str in ('true', '1', 'yes', 'on')
             print(f"🌍 Verbose logging loaded from environment variable: {self.data['settings']['verbose']}")
+        if os.getenv('ENABLE_PINGS'):
+            enable_pings_str = os.getenv('ENABLE_PINGS').lower()
+            self.data['settings']['enable_pings'] = enable_pings_str in ('true', '1', 'yes', 'on')
+            print(f"🌍 Enable pings loaded from environment variable: {self.data['settings']['enable_pings']}")
         
         print("🌍 Environment variable overrides applied")
     def create_default_config(self):
@@ -210,7 +265,8 @@ class Config:
                 "max_messages": 50,
                 "delete_commands": True,
                 "show_join_leave": True,
-                "verbose": False
+                "verbose": False,
+                "enable_pings": False
             }
         }
         
@@ -267,6 +323,7 @@ class DiscordCourtBot(discord.Client):
     def __init__(self, objection_bot, config):
         intents = discord.Intents.default()
         intents.message_content = True
+        intents.members = True  # Required for resolving @pings from courtroom users
         super().__init__(intents=intents)
         
         self.objection_bot = objection_bot
@@ -288,6 +345,8 @@ class DiscordCourtBot(discord.Client):
         self.nicknames = load_nicknames()
         self.colors = load_colors()
         self.characters = load_characters()
+        self.ping_aliases = load_ping_aliases()
+        self._ping_cooldowns = {}  # {discord_user_id: [timestamp1, timestamp2, ...]} for rate limiting
         
         # Pre-compile regex patterns for performance
         self._mention_pattern = re.compile(r'<@\d+>')
@@ -694,7 +753,7 @@ class DiscordCourtBot(discord.Client):
             )
             embed.add_field(
                 name="Commands",
-                value="/status - Check bridge status\n/reconnect - Reconnect to courtroom\n/nickname - Set/reset your bridge nickname\n/color - Set your message color\n/character - Set your character/pose\n/avatars - Toggle avatar display\n/shaba\n/help - Show this help",
+                value="/status - Check bridge status\n/reconnect - Reconnect to courtroom\n/nickname - Set/reset your bridge nickname\n/color - Set your message color\n/character - Set your character/pose\n/pingme - Manage ping aliases (courtroom users can @mention you)\n/avatars - Toggle avatar display\n/shaba\n/help - Show this help",
                 inline=False
             )
             embed.add_field(
@@ -749,6 +808,81 @@ class DiscordCourtBot(discord.Client):
             self.nicknames[user_id] = nickname
             save_nicknames(self.nicknames)
             await interaction.response.send_message(f"✅ Your bridge nickname is now set to: **{nickname}**\nUse `/nickname reset` to remove it.", ephemeral=True)
+        @self.tree.command(name="pingme", description="Manage your ping aliases so courtroom users can @mention you", guild=discord.Object(id=self.guild_id))
+        @app_commands.describe(
+            action="What to do: add, remove, list, or clear",
+            alias="The alias to add or remove (not needed for list/clear)"
+        )
+        @app_commands.choices(action=[
+            app_commands.Choice(name="add", value="add"),
+            app_commands.Choice(name="remove", value="remove"),
+            app_commands.Choice(name="list", value="list"),
+            app_commands.Choice(name="clear", value="clear"),
+        ])
+        async def pingme_command(interaction: discord.Interaction, action: app_commands.Choice[str], alias: str = None):
+            if not check_guild_and_channel(interaction):
+                await interaction.response.send_message("❌ This command can only be used in the configured bridge channel.", ephemeral=True)
+                return
+            
+            user_id = str(interaction.user.id)
+            action_val = action.value
+
+            if action_val == "list":
+                aliases = self.ping_aliases.get(user_id, [])
+                if aliases:
+                    alias_list = ', '.join([f"`{a}`" for a in aliases])
+                    await interaction.response.send_message(f"🔔 Your ping aliases: {alias_list}", ephemeral=True)
+                else:
+                    await interaction.response.send_message("ℹ️ You have no ping aliases set. Use `/pingme add <alias>` to add one.", ephemeral=True)
+                return
+
+            if action_val == "clear":
+                if user_id in self.ping_aliases:
+                    del self.ping_aliases[user_id]
+                    save_ping_aliases(self.ping_aliases)
+                    await interaction.response.send_message("✅ All your ping aliases have been cleared.", ephemeral=True)
+                else:
+                    await interaction.response.send_message("ℹ️ You have no ping aliases to clear.", ephemeral=True)
+                return
+
+            # add / remove require an alias
+            if not alias:
+                await interaction.response.send_message("❌ You must provide an alias for add/remove.", ephemeral=True)
+                return
+
+            alias_clean = alias.strip().lower()
+            if not alias_clean or len(alias_clean) > 32:
+                await interaction.response.send_message("❌ Alias must be 1-32 characters.", ephemeral=True)
+                return
+
+            if action_val == "add":
+                current = self.ping_aliases.get(user_id, [])
+                if alias_clean in current:
+                    await interaction.response.send_message(f"ℹ️ `{alias_clean}` is already one of your ping aliases.", ephemeral=True)
+                    return
+                if len(current) >= 5:
+                    await interaction.response.send_message("❌ You can have at most 5 ping aliases. Remove one first.", ephemeral=True)
+                    return
+                current.append(alias_clean)
+                self.ping_aliases[user_id] = current
+                save_ping_aliases(self.ping_aliases)
+                await interaction.response.send_message(f"✅ Added ping alias `{alias_clean}`. Courtroom users can now ping you by saying `{alias_clean}` as a standalone word.\nTip: recommend courtroom users use `@{alias_clean}` for more deliberate pings.", ephemeral=True)
+                return
+
+            if action_val == "remove":
+                current = self.ping_aliases.get(user_id, [])
+                if alias_clean not in current:
+                    await interaction.response.send_message(f"ℹ️ `{alias_clean}` is not one of your ping aliases.", ephemeral=True)
+                    return
+                current.remove(alias_clean)
+                if current:
+                    self.ping_aliases[user_id] = current
+                else:
+                    del self.ping_aliases[user_id]
+                save_ping_aliases(self.ping_aliases)
+                await interaction.response.send_message(f"✅ Removed ping alias `{alias_clean}`.", ephemeral=True)
+                return
+
         @self.tree.command(name="color", description="Set your message color for the courtroom ('reset' to remove)", guild=discord.Object(id=self.guild_id))
         @app_commands.describe(color="Hex color code like 'ff0000' or '#ff0000', preset name like 'red', or 'reset' to remove")
         async def color_command(interaction: discord.Interaction, color: str):
@@ -1768,12 +1902,111 @@ class DiscordCourtBot(discord.Client):
             self.last_message_username = username
             self.last_message_pose_id = pose_id
             
+<<<<<<< Updated upstream
             # Track the last avatar message for efficient editing (optimization)
             if showing_new_avatar:
                 self.last_avatar_message = sent_message
             else:
                 # Don't track plain text messages
                 pass
+=======
+            # --- Courtroom @ping detection ---
+            # Only runs if ENABLE_PINGS is set to true
+            # Two ping modes:
+            #   1. @name -> matches Discord display names, usernames, global names, AND aliases
+            #   2. Standalone word -> matches ONLY user-added ping aliases (no @ needed)
+            if self.config.get('settings', 'enable_pings'):
+                try:
+                    # Build alias lookup: alias -> discord user ID
+                    alias_lookup = {}
+                    for uid, aliases in self.ping_aliases.items():
+                        for a in aliases:
+                            alias_lookup[a.lower()] = uid
+                    
+                    resolved_mentions = []  # list of (member, source_text) tuples
+                    seen_ids = set()  # track already-pinged user IDs to avoid duplicates
+                    guild = self.bridge_channel.guild
+                    
+                    # --- Mode 1: @name mentions (Discord names + aliases) ---
+                    at_mentions = re.findall(r'@(\w+)', cleaned_message)
+                    for mention_name in at_mentions:
+                        m_lower = mention_name.lower()
+                        member = None
+                        
+                        # Check ping aliases first
+                        if m_lower in alias_lookup:
+                            target_id = int(alias_lookup[m_lower])
+                            member = guild.get_member(target_id)
+                            if not member:
+                                try:
+                                    member = await guild.fetch_member(target_id)
+                                except discord.NotFound:
+                                    pass
+                        
+                        # Try guild member lookup by name/display_name/global_name
+                        if not member:
+                            for gm in guild.members:
+                                if (gm.name.lower() == m_lower or 
+                                    gm.display_name.lower() == m_lower or
+                                    (gm.global_name and gm.global_name.lower() == m_lower)):
+                                    member = gm
+                                    break
+                        
+                        if member and member.id not in seen_ids:
+                            seen_ids.add(member.id)
+                            resolved_mentions.append(member)
+                            log_verbose(f"🔔 Resolved @ping @{mention_name} -> {member.display_name} ({member.id})")
+                    
+                    # --- Mode 2: Standalone word matching for aliases only (no @ needed) ---
+                    if alias_lookup:
+                        # Split message into words (strip punctuation from edges)
+                        words = re.findall(r'\b\w+\b', cleaned_message.lower())
+                        for word in words:
+                            if word in alias_lookup:
+                                target_id = int(alias_lookup[word])
+                                if target_id not in seen_ids:
+                                    member = guild.get_member(target_id)
+                                    if not member:
+                                        try:
+                                            member = await guild.fetch_member(target_id)
+                                        except discord.NotFound:
+                                            pass
+                                    if member:
+                                        seen_ids.add(member.id)
+                                        resolved_mentions.append(member)
+                                        log_verbose(f"🔔 Resolved alias ping '{word}' -> {member.display_name} ({member.id})")
+                    
+                    # Limit to 3 pings per message to prevent spam
+                    if len(resolved_mentions) > 3:
+                        log_verbose(f"⚠️ Ping spam detected: {len(resolved_mentions)} pings, limiting to 3")
+                        resolved_mentions = resolved_mentions[:3]
+                    
+                    # Apply per-user rate limiting (max 3 pings per 60 seconds)
+                    now = time.time()
+                    rate_limited_mentions = []
+                    for member in resolved_mentions:
+                        mid = member.id
+                        # Clean up old timestamps outside the 60s window
+                        if mid in self._ping_cooldowns:
+                            self._ping_cooldowns[mid] = [t for t in self._ping_cooldowns[mid] if now - t < 60]
+                        else:
+                            self._ping_cooldowns[mid] = []
+                        
+                        if len(self._ping_cooldowns[mid]) < 3:
+                            self._ping_cooldowns[mid].append(now)
+                            rate_limited_mentions.append(member)
+                        else:
+                            log_verbose(f"⏳ Rate limited: {member.display_name} ({mid}) already pinged 3 times in the last minute")
+                    
+                    # Send a separate ping notification if any mentions passed rate limiting
+                    if rate_limited_mentions:
+                        mention_strings = [m.mention for m in rate_limited_mentions]
+                        ping_msg = f"🔔 Courtroom user **{username}** pinged {', '.join(mention_strings)}"
+                        await self.bridge_channel.send(ping_msg)
+                        log_verbose(f"🔔 Sent ping notification: {ping_msg}")
+                except Exception as e:
+                    log_verbose(f"⚠️ Error processing courtroom pings: {e}")
+>>>>>>> Stashed changes
             
             # Log the message in simple format for non-verbose mode
             log_message("Chatroom", username, cleaned_message)
