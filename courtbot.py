@@ -25,6 +25,8 @@ COLOR_FILE = '/app/data/colors.json'
 CHARACTER_FILE = '/app/data/characters.json'
 # Autoban patterns storage file
 AUTOBAN_FILE = '/app/data/autobans.json'
+# Ping nickname storage file (for courtroom users to ping Discord users)
+PING_NICKNAME_FILE = '/app/data/ping_nicknames.json'
 
 # Predefined color options for easy access
 PRESET_COLORS = {
@@ -131,6 +133,26 @@ def save_autobans(autobans):
     except Exception as e:
         print(f"❌ Error saving autobans: {e}")
 
+def load_ping_nicknames():
+    """Load ping nicknames from file. Format: {discord_user_id: [nick1, nick2, ...]}"""
+    if os.path.exists(PING_NICKNAME_FILE):
+        try:
+            with open(PING_NICKNAME_FILE, 'r') as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"❌ Error loading ping nicknames: {e}")
+            return {}
+    return {}
+
+def save_ping_nicknames(ping_nicknames):
+    """Save ping nicknames to file"""
+    try:
+        os.makedirs(os.path.dirname(PING_NICKNAME_FILE), exist_ok=True)
+        with open(PING_NICKNAME_FILE, 'w') as f:
+            json.dump(ping_nicknames, f, indent=2)
+    except Exception as e:
+        print(f"❌ Error saving ping nicknames: {e}")
+
 class Config:
     def __init__(self, config_file='/app/data/config.json'):
         self.config_file = config_file
@@ -217,6 +239,10 @@ class Config:
             verbose_str = os.getenv('VERBOSE').lower()
             self.data['settings']['verbose'] = verbose_str in ('true', '1', 'yes', 'on')
             print(f"🌍 Verbose logging loaded from environment variable: {self.data['settings']['verbose']}")
+        if os.getenv('ENABLE_PINGS'):
+            pings_str = os.getenv('ENABLE_PINGS').lower()
+            self.data['settings']['enable_pings'] = pings_str in ('true', '1', 'yes', 'on')
+            print(f"🌍 Pings loaded from environment variable: {self.data['settings']['enable_pings']}")
         
         print("🌍 Environment variable overrides applied")
     def create_default_config(self):
@@ -234,7 +260,8 @@ class Config:
                 "max_messages": 50,
                 "delete_commands": True,
                 "show_join_leave": True,
-                "verbose": False
+                "verbose": False,
+                "enable_pings": False
             }
         }
         
@@ -291,6 +318,7 @@ class DiscordCourtBot(discord.Client):
     def __init__(self, objection_bot, config):
         intents = discord.Intents.default()
         intents.message_content = True
+        intents.members = True  # Required for guild member lookup (ping feature)
         super().__init__(intents=intents)
         
         self.objection_bot = objection_bot
@@ -311,6 +339,10 @@ class DiscordCourtBot(discord.Client):
         self.nicknames = load_nicknames()
         self.colors = load_colors()
         self.characters = load_characters()
+        self.ping_nicknames = load_ping_nicknames()
+        
+        # Rate limiting for pings: {discord_user_id: [timestamp1, timestamp2, ...]}
+        self._ping_rate_limit = {}
         
         # Pre-compile regex patterns for performance
         self._mention_pattern = re.compile(r'<@\d+>')
@@ -920,6 +952,77 @@ class DiscordCourtBot(discord.Client):
             self.nicknames[user_id] = nickname
             save_nicknames(self.nicknames)
             await interaction.response.send_message(f"✅ Your bridge nickname is now set to: **{nickname}**\nUse `/nickname reset` to remove it.", ephemeral=True)
+
+        @self.tree.command(name="pingname", description="Manage your ping nicknames so courtroom users can @mention you", guild=discord.Object(id=self.guild_id))
+        @app_commands.describe(action="Action: add, remove, list, or clear", nickname="The ping nickname (required for add/remove)")
+        async def pingname_command(interaction: discord.Interaction, action: str, nickname: str = None):
+            if not check_guild_and_channel(interaction):
+                await interaction.response.send_message("❌ This command can only be used in the configured bridge channel.", ephemeral=True)
+                return
+            
+            user_id = str(interaction.user.id)
+            action_lower = action.lower().strip()
+            
+            if action_lower == 'list':
+                nicks = self.ping_nicknames.get(user_id, [])
+                if nicks:
+                    nick_list = ', '.join([f'`{n}`' for n in nicks])
+                    await interaction.response.send_message(f"📋 Your ping nicknames: {nick_list}", ephemeral=True)
+                else:
+                    await interaction.response.send_message("ℹ️ You don't have any ping nicknames set. Use `/pingname add <nickname>` to add one.", ephemeral=True)
+                return
+            
+            if action_lower == 'clear':
+                if user_id in self.ping_nicknames:
+                    del self.ping_nicknames[user_id]
+                    save_ping_nicknames(self.ping_nicknames)
+                    await interaction.response.send_message("✅ All your ping nicknames have been cleared.", ephemeral=True)
+                else:
+                    await interaction.response.send_message("ℹ️ You don't have any ping nicknames to clear.", ephemeral=True)
+                return
+            
+            if action_lower == 'add':
+                if not nickname:
+                    await interaction.response.send_message("❌ Please provide a nickname to add. Example: `/pingname add danny`", ephemeral=True)
+                    return
+                nick_lower = nickname.lower().strip()
+                if not nick_lower or len(nick_lower) > 32:
+                    await interaction.response.send_message("❌ Nickname must be 1-32 characters.", ephemeral=True)
+                    return
+                
+                # Check if this nickname is already taken by another user
+                for uid, nicks in self.ping_nicknames.items():
+                    if uid != user_id and nick_lower in nicks:
+                        await interaction.response.send_message(f"❌ The ping nickname `{nick_lower}` is already registered by another user.", ephemeral=True)
+                        return
+                
+                if user_id not in self.ping_nicknames:
+                    self.ping_nicknames[user_id] = []
+                if nick_lower in self.ping_nicknames[user_id]:
+                    await interaction.response.send_message(f"ℹ️ You already have `{nick_lower}` as a ping nickname.", ephemeral=True)
+                    return
+                self.ping_nicknames[user_id].append(nick_lower)
+                save_ping_nicknames(self.ping_nicknames)
+                await interaction.response.send_message(f"✅ Added ping nickname: `{nick_lower}`\nCourtroom users can ping you by just saying `{nick_lower}` (no @ needed).\nFor non-nickname pings, courtroom users should use `@DiscordUsername`.", ephemeral=True)
+                return
+            
+            if action_lower == 'remove':
+                if not nickname:
+                    await interaction.response.send_message("❌ Please provide a nickname to remove. Example: `/pingname remove danny`", ephemeral=True)
+                    return
+                nick_lower = nickname.lower().strip()
+                if user_id in self.ping_nicknames and nick_lower in self.ping_nicknames[user_id]:
+                    self.ping_nicknames[user_id].remove(nick_lower)
+                    if not self.ping_nicknames[user_id]:
+                        del self.ping_nicknames[user_id]
+                    save_ping_nicknames(self.ping_nicknames)
+                    await interaction.response.send_message(f"✅ Removed ping nickname: `{nick_lower}`", ephemeral=True)
+                else:
+                    await interaction.response.send_message(f"❌ You don't have `{nick_lower}` as a ping nickname.", ephemeral=True)
+                return
+            
+            await interaction.response.send_message("❌ Invalid action. Use `add`, `remove`, `list`, or `clear`.", ephemeral=True)
+
         @self.tree.command(name="color", description="Set your message color for the courtroom ('reset' to remove)", guild=discord.Object(id=self.guild_id))
         @app_commands.describe(color="Hex color code like 'ff0000' or '#ff0000', preset name like 'red', or 'reset' to remove")
         async def color_command(interaction: discord.Interaction, color: str):
@@ -1944,6 +2047,68 @@ class DiscordCourtBot(discord.Client):
             # Log the message in simple format for non-verbose mode
             log_message("Chatroom", username, cleaned_message)
             log_verbose(f"🔄 Objection → Discord: {username}: {cleaned_message}")
+            
+            # --- Ping detection: scan for @mentions and nickname matches in courtroom messages ---
+            if self.config.get('settings', 'enable_pings'):
+                try:
+                    pinged_user_ids = set()  # Deduplicate pings
+                    guild = self.bridge_channel.guild
+                    now = time.time()
+                    
+                    # 1. Check for ping nickname matches (bare words, no @ required)
+                    # Split message into words and check each against registered nicknames
+                    message_words = re.findall(r'\w+', cleaned_message.lower())
+                    for uid, nicks in self.ping_nicknames.items():
+                        for nick in nicks:
+                            if nick in message_words and uid not in pinged_user_ids:
+                                # Rate limit check: max 3 pings per 60 seconds per target user
+                                if uid not in self._ping_rate_limit:
+                                    self._ping_rate_limit[uid] = []
+                                # Clean old timestamps (older than 60 seconds)
+                                self._ping_rate_limit[uid] = [t for t in self._ping_rate_limit[uid] if now - t < 60]
+                                if len(self._ping_rate_limit[uid]) >= 3:
+                                    log_verbose(f"📢 Rate limited: skipping ping for user {uid} (3 pings in last 60s)")
+                                    continue
+                                
+                                pinged_user_ids.add(uid)
+                                self._ping_rate_limit[uid].append(now)
+                                ping_message = f"📢 Courtroom user **{username}** pinged <@{uid}>"
+                                await self.bridge_channel.send(ping_message)
+                                log_verbose(f"📢 Ping nickname match: '{nick}' → user ID {uid}")
+                                break  # Only ping once per user even if multiple nicknames match
+                    
+                    # 2. Check for @username mentions (requires @ prefix, for guild member lookup)
+                    at_mentions = re.findall(r'@(\w+)', cleaned_message)
+                    for mention_name in at_mentions:
+                        mention_lower = mention_name.lower()
+                        resolved_user_id = None
+                        
+                        # Search guild members by username/display name
+                        for member in guild.members:
+                            if (member.name.lower() == mention_lower or 
+                                (member.display_name and member.display_name.lower() == mention_lower)):
+                                resolved_user_id = str(member.id)
+                                log_verbose(f"📢 Guild member match: @{mention_name} → {member.name} (ID: {member.id})")
+                                break
+                        
+                        # Send ping notification if resolved and not already pinged (by nickname or earlier @)
+                        if resolved_user_id and resolved_user_id not in pinged_user_ids:
+                            # Rate limit check
+                            if resolved_user_id not in self._ping_rate_limit:
+                                self._ping_rate_limit[resolved_user_id] = []
+                            self._ping_rate_limit[resolved_user_id] = [t for t in self._ping_rate_limit[resolved_user_id] if now - t < 60]
+                            if len(self._ping_rate_limit[resolved_user_id]) >= 3:
+                                log_verbose(f"📢 Rate limited: skipping ping for @{mention_name} (3 pings in last 60s)")
+                                continue
+                            
+                            pinged_user_ids.add(resolved_user_id)
+                            self._ping_rate_limit[resolved_user_id].append(now)
+                            ping_message = f"📢 Courtroom user **{username}** pinged <@{resolved_user_id}>"
+                            await self.bridge_channel.send(ping_message)
+                            log_verbose(f"📢 Sent ping notification: {username} → <@{resolved_user_id}>")
+                except Exception as e:
+                    log_verbose(f"⚠️ Error processing pings: {e}")
+            
             # Clean up old messages if needed
             await self.cleanup_messages()
     async def send_user_notification(self, username, action, user_list=None):
