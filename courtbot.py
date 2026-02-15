@@ -953,7 +953,7 @@ class DiscordCourtBot(discord.Client):
             save_nicknames(self.nicknames)
             await interaction.response.send_message(f"✅ Your bridge nickname is now set to: **{nickname}**\nUse `/nickname reset` to remove it.", ephemeral=True)
 
-        @self.tree.command(name="pingname", description="Manage your ping nicknames so courtroom users can @mention you", guild=discord.Object(id=self.guild_id))
+        @self.tree.command(name="pingname", description="Manage your ping nicknames so courtroom users can mention you. Recommend prefixing with @", guild=discord.Object(id=self.guild_id))
         @app_commands.describe(action="Action: add, remove, list, or clear", nickname="The ping nickname (required for add/remove)")
         async def pingname_command(interaction: discord.Interaction, action: str, nickname: str = None):
             if not check_guild_and_channel(interaction):
@@ -983,7 +983,7 @@ class DiscordCourtBot(discord.Client):
             
             if action_lower == 'add':
                 if not nickname:
-                    await interaction.response.send_message("❌ Please provide a nickname to add. Example: `/pingname add danny`", ephemeral=True)
+                    await interaction.response.send_message("❌ Please provide a nickname to add. Example: `/pingname add myname`", ephemeral=True)
                     return
                 nick_lower = nickname.lower().strip()
                 if not nick_lower or len(nick_lower) > 32:
@@ -1003,12 +1003,12 @@ class DiscordCourtBot(discord.Client):
                     return
                 self.ping_nicknames[user_id].append(nick_lower)
                 save_ping_nicknames(self.ping_nicknames)
-                await interaction.response.send_message(f"✅ Added ping nickname: `{nick_lower}`\nCourtroom users can ping you by just saying `{nick_lower}` (no @ needed).\nFor non-nickname pings, courtroom users should use `@DiscordUsername`.", ephemeral=True)
+                await interaction.response.send_message(f"✅ Added ping nickname: `{nick_lower}`\nCourtroom users can now ping you with `@{nick_lower}`", ephemeral=True)
                 return
             
             if action_lower == 'remove':
                 if not nickname:
-                    await interaction.response.send_message("❌ Please provide a nickname to remove. Example: `/pingname remove danny`", ephemeral=True)
+                    await interaction.response.send_message("❌ Please provide a nickname to remove. Example: `/pingname remove myname`", ephemeral=True)
                     return
                 nick_lower = nickname.lower().strip()
                 if user_id in self.ping_nicknames and nick_lower in self.ping_nicknames[user_id]:
@@ -2055,12 +2055,24 @@ class DiscordCourtBot(discord.Client):
                     guild = self.bridge_channel.guild
                     now = time.time()
                     
-                    # 1. Check for ping nickname matches (bare words, no @ required)
-                    # Split message into words and check each against registered nicknames
-                    message_words = re.findall(r'\w+', cleaned_message.lower())
+                    # 1. Check for ping nickname matches
+                    # Nicknames starting with @ require @prefix in message, bare nicknames match bare words
+                    message_lower = cleaned_message.lower()
+                    message_words = re.findall(r'\w+', message_lower)
+                    at_words = re.findall(r'@(\w+)', message_lower)  # words after @
                     for uid, nicks in self.ping_nicknames.items():
                         for nick in nicks:
-                            if nick in message_words and uid not in pinged_user_ids:
+                            matched = False
+                            if nick.startswith('@'):
+                                # @-prefixed nickname: only match if message has @name
+                                if nick[1:] in at_words:
+                                    matched = True
+                            else:
+                                # Bare nickname: match if bare word appears
+                                if nick in message_words:
+                                    matched = True
+                            
+                            if matched and uid not in pinged_user_ids:
                                 # Rate limit check: max 3 pings per 60 seconds per target user
                                 if uid not in self._ping_rate_limit:
                                     self._ping_rate_limit[uid] = []
