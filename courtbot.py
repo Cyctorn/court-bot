@@ -844,7 +844,7 @@ class DiscordCourtBot(discord.Client):
                     )
                     startup_embed.add_field(
                         name="Available Commands",
-                        value="/status - Check bridge status\n/reconnect - Reconnect to courtroom\n/nickname - Set your bridge nickname\n/color - Set your bridge message color\n/character - Set your character/pose\n/avatars - Toggle avatar display\n/shaba\n/help - Show this help",
+                        value="/status - Check bridge status\n/reconnect - Reconnect to courtroom\n/nickname - Set your bridge nickname\n/pingname - Manage your ping nicknames\n/color - Set your bridge message color\n/character - Set your character/pose\n/avatars - Toggle avatar display\n/shaba\n/help - Show this help",
                         inline=False
                     )
                     startup_embed.add_field(
@@ -897,7 +897,7 @@ class DiscordCourtBot(discord.Client):
             )
             embed.add_field(
                 name="Commands",
-                value="/status - Check bridge status\n/reconnect - Reconnect to courtroom\n/nickname - Set/reset your bridge nickname\n/color - Set your message color\n/character - Set your character/pose\n/avatars - Toggle avatar display\n/shaba\n/help - Show this help",
+                value="/status - Check bridge status\n/reconnect - Reconnect to courtroom\n/nickname - Set/reset your bridge nickname\n/pingname - Manage your ping nicknames\n/color - Set your message color\n/character - Set your character/pose\n/avatars - Toggle avatar display\n/shaba\n/help - Show this help",
                 inline=False
             )
             embed.add_field(
@@ -1641,7 +1641,7 @@ class DiscordCourtBot(discord.Client):
             )
             embed.add_field(
                 name="Available Commands",
-                value="/status - Check bridge status\n/reconnect - Reconnect to courtroom\n/nickname - Set your bridge nickname\n/color - Set your message color\n/character - Set your character/pose\n/avatars - Toggle avatar display\n/shaba\n/help - Show this help",
+                value="/status - Check bridge status\n/reconnect - Reconnect to courtroom\n/nickname - Set your bridge nickname\n/pingname - Manage your ping nicknames\n/color - Set your message color\n/character - Set your character/pose\n/avatars - Toggle avatar display\n/shaba\n/help - Show this help",
                 inline=False
             )
             embed.add_field(
