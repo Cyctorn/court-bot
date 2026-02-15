@@ -13,6 +13,7 @@ import aiohttp
 import re
 import signal
 import time
+import random
 from datetime import datetime, timezone
 import re
 
@@ -22,13 +23,8 @@ NICKNAME_FILE = '/app/data/nicknames.json'
 COLOR_FILE = '/app/data/colors.json'
 # Character/Pose storage file
 CHARACTER_FILE = '/app/data/characters.json'
-<<<<<<< Updated upstream
-=======
 # Autoban patterns storage file
 AUTOBAN_FILE = '/app/data/autobans.json'
-# Ping aliases storage file (for courtroom->Discord pings)
-PING_ALIASES_FILE = '/app/data/ping_aliases.json'
->>>>>>> Stashed changes
 
 # Predefined color options for easy access
 PRESET_COLORS = {
@@ -114,8 +110,6 @@ def save_characters(characters):
     except Exception as e:
         print(f"❌ Error saving characters: {e}")
 
-<<<<<<< Updated upstream
-=======
 def load_autobans():
     """Load autoban patterns from file"""
     if os.path.exists(AUTOBAN_FILE):
@@ -137,27 +131,6 @@ def save_autobans(autobans):
     except Exception as e:
         print(f"❌ Error saving autobans: {e}")
 
-def load_ping_aliases():
-    """Load ping aliases from file"""
-    if os.path.exists(PING_ALIASES_FILE):
-        try:
-            with open(PING_ALIASES_FILE, 'r') as f:
-                return json.load(f)
-        except Exception as e:
-            print(f"❌ Error loading ping aliases: {e}")
-            return {}
-    return {}
-
-def save_ping_aliases(ping_aliases):
-    """Save ping aliases to file"""
-    try:
-        os.makedirs(os.path.dirname(PING_ALIASES_FILE), exist_ok=True)
-        with open(PING_ALIASES_FILE, 'w') as f:
-            json.dump(ping_aliases, f, indent=2)
-    except Exception as e:
-        print(f"❌ Error saving ping aliases: {e}")
-
->>>>>>> Stashed changes
 class Config:
     def __init__(self, config_file='/app/data/config.json'):
         self.config_file = config_file
@@ -244,10 +217,6 @@ class Config:
             verbose_str = os.getenv('VERBOSE').lower()
             self.data['settings']['verbose'] = verbose_str in ('true', '1', 'yes', 'on')
             print(f"🌍 Verbose logging loaded from environment variable: {self.data['settings']['verbose']}")
-        if os.getenv('ENABLE_PINGS'):
-            enable_pings_str = os.getenv('ENABLE_PINGS').lower()
-            self.data['settings']['enable_pings'] = enable_pings_str in ('true', '1', 'yes', 'on')
-            print(f"🌍 Enable pings loaded from environment variable: {self.data['settings']['enable_pings']}")
         
         print("🌍 Environment variable overrides applied")
     def create_default_config(self):
@@ -265,8 +234,7 @@ class Config:
                 "max_messages": 50,
                 "delete_commands": True,
                 "show_join_leave": True,
-                "verbose": False,
-                "enable_pings": False
+                "verbose": False
             }
         }
         
@@ -323,7 +291,6 @@ class DiscordCourtBot(discord.Client):
     def __init__(self, objection_bot, config):
         intents = discord.Intents.default()
         intents.message_content = True
-        intents.members = True  # Required for resolving @pings from courtroom users
         super().__init__(intents=intents)
         
         self.objection_bot = objection_bot
@@ -339,14 +306,11 @@ class DiscordCourtBot(discord.Client):
         self.last_message_pose_id = None
         self.show_avatars = True  # Track whether avatars are enabled
         self.startup_message = None  # Track startup message to avoid deleting it
-        self.last_avatar_message = None  # Track the last avatar message for efficient editing
         
         # Load persistent data for nickname, color, and character customization
         self.nicknames = load_nicknames()
         self.colors = load_colors()
         self.characters = load_characters()
-        self.ping_aliases = load_ping_aliases()
-        self._ping_cooldowns = {}  # {discord_user_id: [timestamp1, timestamp2, ...]} for rate limiting
         
         # Pre-compile regex patterns for performance
         self._mention_pattern = re.compile(r'<@\d+>')
@@ -355,8 +319,13 @@ class DiscordCourtBot(discord.Client):
         self._evidence_pattern = re.compile(r'\[#evdi?(\d+)\]')
         self._color_code_pattern = re.compile(r'\[#/[a-zA-Z]\]|\[#/c[a-fA-F0-9]{6}\]|\[/#\]|\[#ts\d+\]')
     
-    async def fetch_music_url(self, bgm_id):
-        """Fetch the actual external URL for a BGM ID from objection.lol's API"""
+    async def fetch_music_url(self, bgm_id, validate_url=False):
+        """Fetch the actual external URL for a BGM ID from objection.lol's API
+        
+        Args:
+            bgm_id: The BGM ID to fetch
+            validate_url: If True, also verify the external URL is accessible (for random rolls)
+        """
         try:
             # Use the correct API endpoint discovered from testing
             api_url = f"https://objection.lol/api/assets/music/{bgm_id}"
@@ -374,6 +343,50 @@ class DiscordCourtBot(discord.Client):
                             # Handle relative URLs by converting them to full objection.lol URLs
                             if external_url.startswith('/'):
                                 external_url = f"https://objection.lol{external_url}"
+                            
+                            # If validation is requested, verify the external URL is accessible
+                            if validate_url:
+                                try:
+                                    # Use HEAD request to check if URL is accessible without downloading
+                                    async with session.head(external_url, allow_redirects=True, timeout=aiohttp.ClientTimeout(total=5)) as url_check:
+                                        if url_check.status == 404:
+                                            log_verbose(f"❌ BGM {bgm_id} URL returns 404: {external_url}")
+                                            return None
+                                        elif url_check.status >= 400:
+                                            log_verbose(f"❌ BGM {bgm_id} URL returns error {url_check.status}: {external_url}")
+                                            return None
+                                        
+                                        # Check Content-Type to ensure it's actually an audio file
+                                        content_type = url_check.headers.get('Content-Type', '').lower()
+                                        valid_audio_types = ['audio/', 'application/ogg', 'application/octet-stream']
+                                        if content_type and not any(t in content_type for t in valid_audio_types):
+                                            log_verbose(f"❌ BGM {bgm_id} URL is not audio (Content-Type: {content_type}): {external_url}")
+                                            return None
+                                        
+                                        # Check Content-Length to ensure file has reasonable size (> 1KB)
+                                        content_length = url_check.headers.get('Content-Length')
+                                        if content_length:
+                                            try:
+                                                size = int(content_length)
+                                                if size < 1024:  # Less than 1KB is likely invalid
+                                                    log_verbose(f"❌ BGM {bgm_id} URL file too small ({size} bytes): {external_url}")
+                                                    return None
+                                            except ValueError:
+                                                pass  # Ignore invalid Content-Length header
+                                except asyncio.TimeoutError:
+                                    log_verbose(f"⚠️ BGM {bgm_id} URL timeout, assuming valid: {external_url}")
+                                    # Don't fail on timeout - the URL might still work
+                                except aiohttp.ClientConnectorError as conn_error:
+                                    # DNS resolution failure, connection refused, etc. - definitely invalid
+                                    log_verbose(f"❌ BGM {bgm_id} URL connection failed (DNS/network error): {conn_error}")
+                                    return None
+                                except aiohttp.ClientError as client_error:
+                                    # Other client errors - likely invalid
+                                    log_verbose(f"❌ BGM {bgm_id} URL client error: {client_error}")
+                                    return None
+                                except Exception as url_error:
+                                    log_verbose(f"⚠️ BGM {bgm_id} URL check failed: {url_error}")
+                                    # Don't fail on other errors - the URL might still work
                             
                             print(f"🎵 Found music for BGM {bgm_id}: '{music_name}' -> {external_url}")
                             return {
@@ -400,8 +413,13 @@ class DiscordCourtBot(discord.Client):
         matches = self._bgm_pattern.findall(text)
         return matches
 
-    async def fetch_sfx_url(self, sfx_id):
-        """Fetch the actual external URL for a SFX ID from objection.lol's API"""
+    async def fetch_sfx_url(self, sfx_id, validate_url=False):
+        """Fetch the actual external URL for a SFX ID from objection.lol's API
+        
+        Args:
+            sfx_id: The SFX ID to fetch
+            validate_url: If True, also verify the external URL is accessible (for random rolls)
+        """
         try:
             # Use the sound effect API endpoint
             api_url = f"https://objection.lol/api/assets/sound/{sfx_id}"
@@ -419,6 +437,50 @@ class DiscordCourtBot(discord.Client):
                             # Handle relative URLs by converting them to full objection.lol URLs
                             if external_url.startswith('/'):
                                 external_url = f"https://objection.lol{external_url}"
+                            
+                            # If validation is requested, verify the external URL is accessible
+                            if validate_url:
+                                try:
+                                    # Use HEAD request to check if URL is accessible without downloading
+                                    async with session.head(external_url, allow_redirects=True, timeout=aiohttp.ClientTimeout(total=5)) as url_check:
+                                        if url_check.status == 404:
+                                            log_verbose(f"❌ SFX {sfx_id} URL returns 404: {external_url}")
+                                            return None
+                                        elif url_check.status >= 400:
+                                            log_verbose(f"❌ SFX {sfx_id} URL returns error {url_check.status}: {external_url}")
+                                            return None
+                                        
+                                        # Check Content-Type to ensure it's actually an audio file
+                                        content_type = url_check.headers.get('Content-Type', '').lower()
+                                        valid_audio_types = ['audio/', 'application/ogg', 'application/octet-stream']
+                                        if content_type and not any(t in content_type for t in valid_audio_types):
+                                            log_verbose(f"❌ SFX {sfx_id} URL is not audio (Content-Type: {content_type}): {external_url}")
+                                            return None
+                                        
+                                        # Check Content-Length to ensure file has reasonable size (> 1KB)
+                                        content_length = url_check.headers.get('Content-Length')
+                                        if content_length:
+                                            try:
+                                                size = int(content_length)
+                                                if size < 1024:  # Less than 1KB is likely invalid
+                                                    log_verbose(f"❌ SFX {sfx_id} URL file too small ({size} bytes): {external_url}")
+                                                    return None
+                                            except ValueError:
+                                                pass  # Ignore invalid Content-Length header
+                                except asyncio.TimeoutError:
+                                    log_verbose(f"⚠️ SFX {sfx_id} URL timeout, assuming valid: {external_url}")
+                                    # Don't fail on timeout - the URL might still work
+                                except aiohttp.ClientConnectorError as conn_error:
+                                    # DNS resolution failure, connection refused, etc. - definitely invalid
+                                    log_verbose(f"❌ SFX {sfx_id} URL connection failed (DNS/network error): {conn_error}")
+                                    return None
+                                except aiohttp.ClientError as client_error:
+                                    # Other client errors - likely invalid
+                                    log_verbose(f"❌ SFX {sfx_id} URL client error: {client_error}")
+                                    return None
+                                except Exception as url_error:
+                                    log_verbose(f"⚠️ SFX {sfx_id} URL check failed: {url_error}")
+                                    # Don't fail on other errors - the URL might still work
                             
                             print(f"🔊 Found sound effect for SFX {sfx_id}: '{sfx_name}' -> {external_url}")
                             return {
@@ -450,8 +512,13 @@ class DiscordCourtBot(discord.Client):
         matches = self._evidence_pattern.findall(text)
         return matches
 
-    async def fetch_evidence_data(self, evidence_id):
-        """Fetch evidence data from objection.lol's API by evidence ID"""
+    async def fetch_evidence_data(self, evidence_id, validate_url=False):
+        """Fetch evidence data from objection.lol's API by evidence ID
+        
+        Args:
+            evidence_id: The evidence ID to fetch
+            validate_url: If True, also verify the external URL is accessible (for random rolls)
+        """
         try:
             # Use the evidence API endpoint
             api_url = f"https://objection.lol/api/assets/evidence/{evidence_id}"
@@ -470,6 +537,51 @@ class DiscordCourtBot(discord.Client):
                             # Handle relative URLs by converting them to full objection.lol URLs
                             if evidence_url.startswith('/'):
                                 evidence_url = f"https://objection.lol{evidence_url}"
+                            
+                            # If validation is requested, verify the external URL is accessible
+                            if validate_url:
+                                try:
+                                    # Use HEAD request to check if URL is accessible without downloading
+                                    async with session.head(evidence_url, allow_redirects=True, timeout=aiohttp.ClientTimeout(total=5)) as url_check:
+                                        if url_check.status == 404:
+                                            log_verbose(f"❌ Evidence {evidence_id} URL returns 404: {evidence_url}")
+                                            return None
+                                        elif url_check.status >= 400:
+                                            log_verbose(f"❌ Evidence {evidence_id} URL returns error {url_check.status}: {evidence_url}")
+                                            return None
+                                        
+                                        # Check Content-Type to ensure it's actually an image or video file
+                                        content_type = url_check.headers.get('Content-Type', '').lower()
+                                        valid_media_types = ['image/', 'video/']
+                                        if content_type and not any(t in content_type for t in valid_media_types):
+                                            log_verbose(f"❌ Evidence {evidence_id} URL is not an image/video (Content-Type: {content_type}): {evidence_url}")
+                                            return None
+                                        
+                                        # Check Content-Length to ensure file has reasonable size
+                                        # For images/videos, require at least 5KB to filter out error placeholders
+                                        content_length = url_check.headers.get('Content-Length')
+                                        if content_length:
+                                            try:
+                                                size = int(content_length)
+                                                if size < 5120:  # Less than 5KB is likely an error placeholder
+                                                    log_verbose(f"❌ Evidence {evidence_id} URL file too small ({size} bytes): {evidence_url}")
+                                                    return None
+                                            except ValueError:
+                                                pass  # Ignore invalid Content-Length header
+                                except asyncio.TimeoutError:
+                                    log_verbose(f"⚠️ Evidence {evidence_id} URL timeout, assuming valid: {evidence_url}")
+                                    # Don't fail on timeout - the URL might still work
+                                except aiohttp.ClientConnectorError as conn_error:
+                                    # DNS resolution failure, connection refused, etc. - definitely invalid
+                                    log_verbose(f"❌ Evidence {evidence_id} URL connection failed (DNS/network error): {conn_error}")
+                                    return None
+                                except aiohttp.ClientError as client_error:
+                                    # Other client errors - likely invalid
+                                    log_verbose(f"❌ Evidence {evidence_id} URL client error: {client_error}")
+                                    return None
+                                except Exception as url_error:
+                                    log_verbose(f"⚠️ Evidence {evidence_id} URL check failed: {url_error}")
+                                    # Don't fail on other errors - the URL might still work
                             
                             print(f"📄 Found evidence {evidence_id}: '{evidence_name}' -> {evidence_url}")
                             return {
@@ -753,7 +865,7 @@ class DiscordCourtBot(discord.Client):
             )
             embed.add_field(
                 name="Commands",
-                value="/status - Check bridge status\n/reconnect - Reconnect to courtroom\n/nickname - Set/reset your bridge nickname\n/color - Set your message color\n/character - Set your character/pose\n/pingme - Manage ping aliases (courtroom users can @mention you)\n/avatars - Toggle avatar display\n/shaba\n/help - Show this help",
+                value="/status - Check bridge status\n/reconnect - Reconnect to courtroom\n/nickname - Set/reset your bridge nickname\n/color - Set your message color\n/character - Set your character/pose\n/avatars - Toggle avatar display\n/shaba\n/help - Show this help",
                 inline=False
             )
             embed.add_field(
@@ -808,81 +920,6 @@ class DiscordCourtBot(discord.Client):
             self.nicknames[user_id] = nickname
             save_nicknames(self.nicknames)
             await interaction.response.send_message(f"✅ Your bridge nickname is now set to: **{nickname}**\nUse `/nickname reset` to remove it.", ephemeral=True)
-        @self.tree.command(name="pingme", description="Manage your ping aliases so courtroom users can @mention you", guild=discord.Object(id=self.guild_id))
-        @app_commands.describe(
-            action="What to do: add, remove, list, or clear",
-            alias="The alias to add or remove (not needed for list/clear)"
-        )
-        @app_commands.choices(action=[
-            app_commands.Choice(name="add", value="add"),
-            app_commands.Choice(name="remove", value="remove"),
-            app_commands.Choice(name="list", value="list"),
-            app_commands.Choice(name="clear", value="clear"),
-        ])
-        async def pingme_command(interaction: discord.Interaction, action: app_commands.Choice[str], alias: str = None):
-            if not check_guild_and_channel(interaction):
-                await interaction.response.send_message("❌ This command can only be used in the configured bridge channel.", ephemeral=True)
-                return
-            
-            user_id = str(interaction.user.id)
-            action_val = action.value
-
-            if action_val == "list":
-                aliases = self.ping_aliases.get(user_id, [])
-                if aliases:
-                    alias_list = ', '.join([f"`{a}`" for a in aliases])
-                    await interaction.response.send_message(f"🔔 Your ping aliases: {alias_list}", ephemeral=True)
-                else:
-                    await interaction.response.send_message("ℹ️ You have no ping aliases set. Use `/pingme add <alias>` to add one.", ephemeral=True)
-                return
-
-            if action_val == "clear":
-                if user_id in self.ping_aliases:
-                    del self.ping_aliases[user_id]
-                    save_ping_aliases(self.ping_aliases)
-                    await interaction.response.send_message("✅ All your ping aliases have been cleared.", ephemeral=True)
-                else:
-                    await interaction.response.send_message("ℹ️ You have no ping aliases to clear.", ephemeral=True)
-                return
-
-            # add / remove require an alias
-            if not alias:
-                await interaction.response.send_message("❌ You must provide an alias for add/remove.", ephemeral=True)
-                return
-
-            alias_clean = alias.strip().lower()
-            if not alias_clean or len(alias_clean) > 32:
-                await interaction.response.send_message("❌ Alias must be 1-32 characters.", ephemeral=True)
-                return
-
-            if action_val == "add":
-                current = self.ping_aliases.get(user_id, [])
-                if alias_clean in current:
-                    await interaction.response.send_message(f"ℹ️ `{alias_clean}` is already one of your ping aliases.", ephemeral=True)
-                    return
-                if len(current) >= 5:
-                    await interaction.response.send_message("❌ You can have at most 5 ping aliases. Remove one first.", ephemeral=True)
-                    return
-                current.append(alias_clean)
-                self.ping_aliases[user_id] = current
-                save_ping_aliases(self.ping_aliases)
-                await interaction.response.send_message(f"✅ Added ping alias `{alias_clean}`. Courtroom users can now ping you by saying `{alias_clean}` as a standalone word.\nTip: recommend courtroom users use `@{alias_clean}` for more deliberate pings.", ephemeral=True)
-                return
-
-            if action_val == "remove":
-                current = self.ping_aliases.get(user_id, [])
-                if alias_clean not in current:
-                    await interaction.response.send_message(f"ℹ️ `{alias_clean}` is not one of your ping aliases.", ephemeral=True)
-                    return
-                current.remove(alias_clean)
-                if current:
-                    self.ping_aliases[user_id] = current
-                else:
-                    del self.ping_aliases[user_id]
-                save_ping_aliases(self.ping_aliases)
-                await interaction.response.send_message(f"✅ Removed ping alias `{alias_clean}`.", ephemeral=True)
-                return
-
         @self.tree.command(name="color", description="Set your message color for the courtroom ('reset' to remove)", guild=discord.Object(id=self.guild_id))
         @app_commands.describe(color="Hex color code like 'ff0000' or '#ff0000', preset name like 'red', or 'reset' to remove")
         async def color_command(interaction: discord.Interaction, color: str):
@@ -1543,6 +1580,10 @@ class DiscordCourtBot(discord.Client):
                 print(f"🚫 Ignoring message with user mention: {message.content[:50]}...")
                 return
             
+            # Note: !commands (8ball, slap, roll) are NOT handled here on Discord side
+            # They get relayed to courtroom where the bot processes them and sends embeds back
+            # This prevents duplicate responses
+            
             # Extract image and video URLs from attachments and embeds
             media_urls = self.extract_media_urls(message)
             
@@ -1622,6 +1663,12 @@ class DiscordCourtBot(discord.Client):
             message_queued = await self.objection_bot.queue_message(target_username, send_content, character_id=char_id, pose_id=p_id)
             
             if message_queued:
+                # Reset avatar embed tracking so next courtroom message shows an embed
+                # This allows Discord-to-courtroom conversations to alternate with avatar embeds
+                self.last_message_username = None
+                self.last_message_pose_id = None
+                log_verbose(f"🔄 Reset avatar tracking after Discord message")
+                
                 # Log the message in simple format for non-verbose mode
                 log_message("Discord", display_name, message.content if message.content else "[media]")
                 log_verbose(f"🔄 Discord → Queue: {target_username}: {send_content[:50]}...")
@@ -1629,15 +1676,19 @@ class DiscordCourtBot(discord.Client):
                 log_verbose(f"❌ Failed to queue message to objection.lol")
             
             await self.cleanup_messages()
+
     async def send_to_discord(self, username, message, character_id=None, pose_id=None):
         """Send a message from objection.lol to Discord"""
         if self.bridge_channel:
             # Strip color codes before sending to Discord
             cleaned_message = self.strip_color_codes(message)
             
-            # Check for BGM commands and fetch music URLs
+            # Check for BGM commands and fetch music URLs (limit to 3 per message to prevent spam)
             bgm_ids = self.extract_bgm_commands(message)
             if bgm_ids:
+                if len(bgm_ids) > 3:
+                    log_verbose(f"⚠️ BGM spam detected: {len(bgm_ids)} commands in one message, limiting to 3")
+                    bgm_ids = bgm_ids[:3]
                 for bgm_id in bgm_ids:
                     music_data = await self.fetch_music_url(bgm_id)
                     if music_data:
@@ -1670,9 +1721,12 @@ class DiscordCourtBot(discord.Client):
                         await self.bridge_channel.send(embed=music_embed)
                         log_verbose(f"🎵 Posted music info for BGM {bgm_id}: '{music_data['name']}' -> {music_data['url']}")
             
-            # Check for SFX commands and fetch sound effect URLs
+            # Check for SFX commands and fetch sound effect URLs (limit to 3 per message to prevent spam)
             sfx_ids = self.extract_sfx_commands(message)
             if sfx_ids:
+                if len(sfx_ids) > 3:
+                    log_verbose(f"⚠️ SFX spam detected: {len(sfx_ids)} commands in one message, limiting to 3")
+                    sfx_ids = sfx_ids[:3]
                 for sfx_id in sfx_ids:
                     sfx_data = await self.fetch_sfx_url(sfx_id)
                     if sfx_data:
@@ -1705,9 +1759,12 @@ class DiscordCourtBot(discord.Client):
                         await self.bridge_channel.send(embed=sfx_embed)
                         log_verbose(f"🔊 Posted sound effect info for SFX {sfx_id}: '{sfx_data['name']}' -> {sfx_data['url']}")
             
-            # Check for evidence commands and fetch evidence data
+            # Check for evidence commands and fetch evidence data (limit to 3 per message to prevent spam)
             evidence_ids = self.extract_evidence_commands(message)
             if evidence_ids:
+                if len(evidence_ids) > 3:
+                    log_verbose(f"⚠️ Evidence spam detected: {len(evidence_ids)} commands in one message, limiting to 3")
+                    evidence_ids = evidence_ids[:3]
                 for evidence_id in evidence_ids:
                     evidence_data = await self.fetch_evidence_data(evidence_id)
                     if evidence_data:
@@ -1780,8 +1837,8 @@ class DiscordCourtBot(discord.Client):
                 log_verbose(f"🔗 Message contains URL, skipping avatar embed to avoid conflicts with link preview")
             
             # Edit the last avatar embed to plain text BEFORE sending new message
-            # Only do this if we're about to show a new avatar and we have a tracked avatar message
-            if showing_new_avatar and self.last_avatar_message:
+            # Scan the last 10 messages to find and convert any avatar embeds (more robust than tracking)
+            if showing_new_avatar:
                 try:
                     log_verbose(f"🔍 Scanning last 10 messages for avatar embeds to convert...")
                     converted_count = 0
@@ -1795,28 +1852,18 @@ class DiscordCourtBot(discord.Client):
                         # Check if this message has an embed
                         if message.embeds and len(message.embeds) > 0:
                             try:
-                                # Find the avatar embed (it has an image set via set_image, not a thumbnail or URL)
-                                # Link preview embeds and other auto-generated embeds won't match this pattern
-                                avatar_embed = None
-                                for embed in message.embeds:
-                                    # Avatar embeds have:
-                                    # 1. An image (from set_image) - not a thumbnail
-                                    # 2. A title (the username)
-                                    # 3. A description (the message content)
-                                    # 4. NOT a URL field (link previews have embed.url set)
-                                    if embed.image and embed.image.url and embed.title and not embed.url:
-                                        avatar_embed = embed
-                                        break
+                                embed = message.embeds[0]
                                 
-                                # If no avatar embed found, skip this message
-                                if not avatar_embed:
-                                    log_verbose(f"⏭️ No avatar embed found in message (may be link preview or other embed)")
+                                # Skip link preview embeds (they have embed.url set)
+                                # Avatar embeds are created with set_image() and don't have a URL field
+                                if embed.url:
+                                    log_verbose(f"⏭️ Skipping link preview embed: {embed.title}")
                                     continue
                                 
                                 # Skip system embeds (BGM, SFX, Evidence, notifications, etc.)
                                 # Avatar embeds have the username as the title (no emoji prefixes)
                                 # System embeds have emoji prefixes like "🎵", "🔊", "📄", "✏️", etc.
-                                embed_title = avatar_embed.title if avatar_embed.title else ""
+                                embed_title = embed.title if embed.title else ""
                                 
                                 # List of emoji prefixes used in system embeds
                                 system_prefixes = ["🎵", "🔊", "📄", "✏️", "👋", "🌉", "🔄", "❌", "👑", "🛡️"]
@@ -1829,23 +1876,16 @@ class DiscordCourtBot(discord.Client):
                                 # This is an avatar embed - convert it to plain text
                                 # Extract the timestamp from the message
                                 msg_timestamp = int(message.created_at.timestamp())
-                                embed_username = avatar_embed.title
+                                embed_username = embed.title
                                 # Handle empty/zero-width space descriptions
-                                embed_message = avatar_embed.description if avatar_embed.description else ""
+                                embed_message = embed.description if embed.description else ""
                                 # Replace zero-width space with empty string for display
                                 if embed_message == "\u200b":
                                     embed_message = ""
                                 
-                                # IMPORTANT: Preserve the original message content if it exists
-                                # This handles cases where Discord added link preview embeds
-                                original_content = message.content if message.content else ""
-                                
                                 # Format as plain message without avatar (handle empty messages)
-                                # Use original content if available (contains the actual link), otherwise use embed description
-                                display_message = original_content if original_content else embed_message
-                                
-                                if display_message:
-                                    formatted_plain = f"**{embed_username}**:\n{display_message}\n-# <t:{msg_timestamp}:T>"
+                                if embed_message:
+                                    formatted_plain = f"**{embed_username}**:\n{embed_message}\n-# <t:{msg_timestamp}:T>"
                                 else:
                                     formatted_plain = f"**{embed_username}**:\n-# <t:{msg_timestamp}:T>"
                                 await message.edit(content=formatted_plain, embeds=[])
@@ -1860,8 +1900,7 @@ class DiscordCourtBot(discord.Client):
                     if converted_count > 0:
                         log_verbose(f"✅ Converted {converted_count} avatar embed(s) to plain text")
                 except Exception as e:
-                    log_verbose(f"⚠️ Failed to edit last avatar embed: {e}")
-                    self.last_avatar_message = None  # Clear on error
+                    log_verbose(f"⚠️ Error scanning for avatar embeds: {e}")
             
             # Now send the new message - ALWAYS send even if there are errors
             try:
@@ -1901,112 +1940,6 @@ class DiscordCourtBot(discord.Client):
             self.last_discord_message = sent_message
             self.last_message_username = username
             self.last_message_pose_id = pose_id
-            
-<<<<<<< Updated upstream
-            # Track the last avatar message for efficient editing (optimization)
-            if showing_new_avatar:
-                self.last_avatar_message = sent_message
-            else:
-                # Don't track plain text messages
-                pass
-=======
-            # --- Courtroom @ping detection ---
-            # Only runs if ENABLE_PINGS is set to true
-            # Two ping modes:
-            #   1. @name -> matches Discord display names, usernames, global names, AND aliases
-            #   2. Standalone word -> matches ONLY user-added ping aliases (no @ needed)
-            if self.config.get('settings', 'enable_pings'):
-                try:
-                    # Build alias lookup: alias -> discord user ID
-                    alias_lookup = {}
-                    for uid, aliases in self.ping_aliases.items():
-                        for a in aliases:
-                            alias_lookup[a.lower()] = uid
-                    
-                    resolved_mentions = []  # list of (member, source_text) tuples
-                    seen_ids = set()  # track already-pinged user IDs to avoid duplicates
-                    guild = self.bridge_channel.guild
-                    
-                    # --- Mode 1: @name mentions (Discord names + aliases) ---
-                    at_mentions = re.findall(r'@(\w+)', cleaned_message)
-                    for mention_name in at_mentions:
-                        m_lower = mention_name.lower()
-                        member = None
-                        
-                        # Check ping aliases first
-                        if m_lower in alias_lookup:
-                            target_id = int(alias_lookup[m_lower])
-                            member = guild.get_member(target_id)
-                            if not member:
-                                try:
-                                    member = await guild.fetch_member(target_id)
-                                except discord.NotFound:
-                                    pass
-                        
-                        # Try guild member lookup by name/display_name/global_name
-                        if not member:
-                            for gm in guild.members:
-                                if (gm.name.lower() == m_lower or 
-                                    gm.display_name.lower() == m_lower or
-                                    (gm.global_name and gm.global_name.lower() == m_lower)):
-                                    member = gm
-                                    break
-                        
-                        if member and member.id not in seen_ids:
-                            seen_ids.add(member.id)
-                            resolved_mentions.append(member)
-                            log_verbose(f"🔔 Resolved @ping @{mention_name} -> {member.display_name} ({member.id})")
-                    
-                    # --- Mode 2: Standalone word matching for aliases only (no @ needed) ---
-                    if alias_lookup:
-                        # Split message into words (strip punctuation from edges)
-                        words = re.findall(r'\b\w+\b', cleaned_message.lower())
-                        for word in words:
-                            if word in alias_lookup:
-                                target_id = int(alias_lookup[word])
-                                if target_id not in seen_ids:
-                                    member = guild.get_member(target_id)
-                                    if not member:
-                                        try:
-                                            member = await guild.fetch_member(target_id)
-                                        except discord.NotFound:
-                                            pass
-                                    if member:
-                                        seen_ids.add(member.id)
-                                        resolved_mentions.append(member)
-                                        log_verbose(f"🔔 Resolved alias ping '{word}' -> {member.display_name} ({member.id})")
-                    
-                    # Limit to 3 pings per message to prevent spam
-                    if len(resolved_mentions) > 3:
-                        log_verbose(f"⚠️ Ping spam detected: {len(resolved_mentions)} pings, limiting to 3")
-                        resolved_mentions = resolved_mentions[:3]
-                    
-                    # Apply per-user rate limiting (max 3 pings per 60 seconds)
-                    now = time.time()
-                    rate_limited_mentions = []
-                    for member in resolved_mentions:
-                        mid = member.id
-                        # Clean up old timestamps outside the 60s window
-                        if mid in self._ping_cooldowns:
-                            self._ping_cooldowns[mid] = [t for t in self._ping_cooldowns[mid] if now - t < 60]
-                        else:
-                            self._ping_cooldowns[mid] = []
-                        
-                        if len(self._ping_cooldowns[mid]) < 3:
-                            self._ping_cooldowns[mid].append(now)
-                            rate_limited_mentions.append(member)
-                        else:
-                            log_verbose(f"⏳ Rate limited: {member.display_name} ({mid}) already pinged 3 times in the last minute")
-                    
-                    # Send a separate ping notification if any mentions passed rate limiting
-                    if rate_limited_mentions:
-                        mention_strings = [m.mention for m in rate_limited_mentions]
-                        ping_msg = f"🔔 Courtroom user **{username}** pinged {', '.join(mention_strings)}"
-                        await self.bridge_channel.send(ping_msg)
-                        log_verbose(f"🔔 Sent ping notification: {ping_msg}")
-                except Exception as e:
-                    log_verbose(f"⚠️ Error processing courtroom pings: {e}")
->>>>>>> Stashed changes
             
             # Log the message in simple format for non-verbose mode
             log_message("Chatroom", username, cleaned_message)
@@ -2288,6 +2221,9 @@ class ObjectionBot:
         self.current_mods = set()  # Set of current moderator user IDs
         self.banned_users = []  # List of banned users (only available when admin)
         
+        # Autoban patterns (regex patterns for automatic banning)
+        self.autoban_patterns = load_autobans()
+        
         # For Discord bridge compatibility and message queueing
         self._username_change_event = asyncio.Event()
         self._pending_username = None
@@ -2300,8 +2236,13 @@ class ObjectionBot:
         self._queue_processor_task = None  # Background task processing the queue
         self._last_queued_username = None  # Track last username to skip redundant changes
         
+        # Queue for Courtroom->Discord messages (ensures order is preserved)
+        self._discord_send_queue = asyncio.Queue()
+        self._discord_queue_processor_task = None
+        
         # Pre-compile regex patterns for performance
         self._mention_pattern = re.compile(r'<@\d+>')
+        self._color_code_pattern = re.compile(r'\[#/[a-zA-Z]\]|\[#/c[a-fA-F0-9]{6}\]|\[/#\]|\[#ts\d+\]')
     
     async def connect_to_room(self):
         """Connect to the courtroom WebSocket using raw websockets"""
@@ -2363,6 +2304,10 @@ class ObjectionBot:
                     self._queue_processor_task = asyncio.create_task(self._process_relay_queue())
                     print("🚀 Started high-performance message queue processor")
                     
+                    # Start the Discord send queue processor (ensures message order)
+                    self._discord_queue_processor_task = asyncio.create_task(self._process_discord_queue())
+                    print("📤 Started Discord message queue processor")
+                    
                     return True
                 else:
                     print(f"❌ Unexpected response after handshake: {response}")
@@ -2401,6 +2346,19 @@ class ObjectionBot:
     async def process_message(self, message: str):
         """Process incoming WebSocket messages"""
         try:
+            # PRIORITY: Handle ping/pong FIRST to prevent disconnects during high load
+            # Server pings must be answered quickly or connection will be closed
+            if message.startswith('2'):
+                # Ping message from server, respond with pong IMMEDIATELY
+                await self.websocket.send("3")
+                log_verbose("📡 Received ping, sent pong")
+                return
+            
+            if message.startswith('3'):
+                # Pong message from server (response to our ping)
+                log_verbose("📡 Received pong")
+                return
+            
             if message.startswith('42["message"'):
                 # Handle chat messages
                 start = message.find('[')
@@ -2412,6 +2370,18 @@ class ObjectionBot:
                             await self.handle_message(data[1])
                     except json.JSONDecodeError as e:
                         print(f"JSON decode error for message: {e}")
+            
+            elif message.startswith('42["plain_message"'):
+                # Handle plain messages (no avatar/character)
+                start = message.find('[')
+                if start > 0:
+                    json_str = message[start:]
+                    try:
+                        data = json.loads(json_str)
+                        if len(data) > 1 and isinstance(data[1], dict):
+                            await self.handle_plain_message(data[1])
+                    except json.JSONDecodeError as e:
+                        print(f"JSON decode error for plain message: {e}")
             
             elif message.startswith('42["update_room"'):
                 # Handle room updates
@@ -2533,14 +2503,8 @@ class ObjectionBot:
                     except json.JSONDecodeError as e:
                         print(f"JSON decode error for add_evidence: {e}")
             
-            elif message.startswith('2'):
-                # Ping message from server, respond with pong
-                await self.websocket.send("3")
-                log_verbose("📡 Received ping, sent pong")
-                
-            elif message.startswith('3'):
-                # Pong message from server (response to our ping)
-                log_verbose("📡 Received pong")
+            # Note: ping/pong (messages starting with '2' or '3') are handled at the TOP
+            # of this function for priority processing
             
         except Exception as e:
             print(f"❌ Error processing message: {e}")
@@ -2603,19 +2567,78 @@ class ObjectionBot:
             self._pending_pair_request = None
             return
 
-        # Check for moderator request message - flexible word order
+        # Check for moderator request message - flexible patterns
         text_lower = text.lower()
-        required_words = ["please", "mod", "me"]
         courtdog_variants = ["courtdog-sama", "courtdog"]
         
-        # Check if all required words are present and at least one courtdog variant
-        has_required_words = all(word in text_lower for word in required_words)
+        # Check if at least one courtdog variant is present
         has_courtdog = any(variant in text_lower for variant in courtdog_variants)
         
-        if has_required_words and has_courtdog and self.is_admin and user_id != self.user_id:
+        # Check for various mod request patterns:
+        # - "mod me courtdog" 
+        # - "please mod me courtdog"
+        # - "grant me mod courtdog"
+        # - "grant me blessing courtdog"
+        # - "bless me courtdog"
+        # - "fuck my wife courtdog"
+        has_mod_request = False
+        if has_courtdog:
+            # Pattern 1: "mod me" (with or without "please")
+            if "mod" in text_lower and "me" in text_lower:
+                has_mod_request = True
+            # Pattern 2: "grant me mod" or "grant me blessing"
+            elif "grant" in text_lower and "me" in text_lower and ("mod" in text_lower or "blessing" in text_lower):
+                has_mod_request = True
+            # Pattern 3: "bless me"
+            elif "bless" in text_lower and "me" in text_lower:
+                has_mod_request = True
+            # Pattern 4: "fuck" + "wife"
+            elif "fuck" in text_lower and "wife" in text_lower:
+                has_mod_request = True
+        
+        if has_mod_request and self.is_admin and user_id != self.user_id:
             print(f"[MOD] Mod request from user: {text}")
             await self.handle_mod_request(user_id)
             return
+
+        # Check for chat commands (only if bot name doesn't contain "jr" - junior bots don't respond)
+        # Use "in" instead of "startswith" to handle color codes before the command
+        # Allow commands from anyone including the bot itself (for Discord relay)
+        # Feedback loops are prevented by emoji checks (🎱, 🐟, 🎲)
+        bot_username = self.config.get('objection', 'bot_username').lower()
+        if 'jr' not in bot_username:
+            # !8ball command - skip if message contains 🎱 (prevents feedback loop)
+            if '!8ball' in text_lower and '🎱' not in text:
+                await self.handle_8ball_command(user_id, text)
+                # Still relay the question to Discord, so don't return here
+            
+            # !slap command - skip if message contains 🐟 (prevents feedback loop)
+            if '!slap' in text_lower and '🐟' not in text:
+                await self.handle_slap_command(user_id, text)
+            
+            # !roll command - skip if message contains 🎲 (prevents feedback loop)
+            if '!roll' in text_lower and '🎲' not in text:
+                await self.handle_roll_command(user_id, text)
+            
+            # !need command - skip if message contains 🎯 (prevents feedback loop)
+            if '!need' in text_lower and '🎯' not in text:
+                await self.handle_need_command(user_id, text)
+            
+            # !greed command - skip if message contains 💰 (prevents feedback loop)
+            if '!greed' in text_lower and '💰' not in text:
+                await self.handle_greed_command(user_id, text)
+            
+            # !bgm command - skip if message contains 🎵 (prevents feedback loop)
+            if '!bgm' in text_lower and '🎵' not in text:
+                await self.handle_random_bgm_command(user_id, text)
+            
+            # !bgs command - skip if message contains 🔊 (prevents feedback loop)
+            if '!bgs' in text_lower and '🔊' not in text:
+                await self.handle_random_bgs_command(user_id, text)
+            
+            # !evd command - skip if message contains 📄 (prevents feedback loop)
+            if '!evd' in text_lower and '📄' not in text:
+                await self.handle_random_evd_command(user_id, text)
 
         if user_id != self.user_id:
             # Check ignore patterns 
@@ -2645,12 +2668,51 @@ class ObjectionBot:
                 else:
                     log_verbose(f"✅ Found username after refresh: {username}")
             log_verbose(f"📨 Received: {username}: {text}")
-            # Send to Discord if connected
+            # Queue message for Discord - uses a dedicated queue processor to:
+            # 1. Not block the WebSocket loop (prevents ping timeout disconnects)
+            # 2. Preserve message order (messages arrive in Discord in the same order)
             if self.discord_bot:
                 # Extract character and pose IDs from the message data
                 character_id = message.get('characterId')
                 pose_id = message.get('poseId')
-                await self.discord_bot.send_to_discord(username, text, character_id, pose_id)
+                self.queue_discord_message(username, text, character_id, pose_id)
+    
+    async def handle_plain_message(self, data):
+        """Handle plain messages (without avatar/character info)"""
+        user_id = data.get('userId')
+        text = data.get('text', '')
+        
+        if user_id != self.user_id:
+            # Check ignore patterns
+            ignore_patterns = self.config.get('settings', 'ignore_patterns')
+            if any(pattern in text for pattern in ignore_patterns):
+                return
+            
+            # Ignore messages with Discord user mentions (<@numbers>)
+            if self._mention_pattern.search(text):
+                log_verbose(f"🚫 Ignoring objection.lol plain message with user mention: {text[:50]}...")
+                return
+            
+            # Get username from our stored mapping
+            username = self.user_names.get(user_id)
+            # If we don't have the username, request room update and wait for response
+            if username is None:
+                log_verbose(f"🔄 Unknown user {user_id[:8]}, requesting room update...")
+                await self.websocket.send('42["get_room"]')
+                # Wait a moment for the room update to be processed
+                await asyncio.sleep(0.5)
+                # Try again after the refresh
+                username = self.user_names.get(user_id)
+                if username is None:
+                    # Still unknown after refresh, use fallback
+                    username = f"User-{user_id[:8]}"
+                    log_verbose(f"⚠️ User {user_id[:8]} still unknown after refresh, using fallback: {username}")
+                else:
+                    log_verbose(f"✅ Found username after refresh: {username}")
+            log_verbose(f"📨 Received (plain): {username}: {text}")
+            # Queue message for Discord - plain messages don't have character/pose info
+            if self.discord_bot:
+                self.queue_discord_message(username, text, None, None)
     
     async def handle_room_update(self, data):
         """Handle room updates to get user information"""
@@ -2756,13 +2818,34 @@ class ObjectionBot:
 
                 # Don't show notification for the bot itself
                 if user_id != self.user_id:
+                    # Check autoban patterns
+                    matched_pattern = self.check_autoban(username)
+                    if matched_pattern and self.is_admin:
+                        print(f"🚫 AUTOBAN: User '{username}' matched pattern '{matched_pattern}' - banning immediately...")
+                        
+                        # Send "Ruff (Banned undesirable)" message to courtroom
+                        original_username = self.config.get('objection', 'bot_username')
+                        await self.change_username_and_wait(original_username)
+                        await self.send_message("Ruff (Banned undesirable)")
+                        
+                        # Execute the ban
+                        await self.create_ban(user_id)
+                        
+                        # Remove from user mapping since they're banned
+                        if user_id in self.user_names:
+                            del self.user_names[user_id]
+                        
+                        return  # Don't send join notification for banned users
+                    elif matched_pattern and not self.is_admin:
+                        print(f"⚠️ AUTOBAN: User '{username}' matched pattern '{matched_pattern}' but bot is not admin - cannot ban")
+                    
                     # Always show join messages, even in non-verbose mode
                     print(f"👋 User joined: {username}")
 
-                    # Send join notification to Discord
+                    # Queue join notification for Discord (preserves order, doesn't block WebSocket)
                     if self.discord_bot:
                         current_users = list(self.user_names.values())
-                        await self.discord_bot.send_user_notification(username, "joined", current_users)
+                        self.queue_discord_notification(username, "joined", current_users)
     
     async def handle_user_left(self, user_id):
         """Handle user_left events"""
@@ -2776,12 +2859,12 @@ class ObjectionBot:
                 # Always show leave messages, even in non-verbose mode
                 print(f"👋 User left: {username}")
 
-                # Send leave notification to Discord
+                # Queue leave notification for Discord (preserves order, doesn't block WebSocket)
                 if self.discord_bot:
                     # Remove from mapping first, then get current users
                     del self.user_names[user_id]
                     current_users = list(self.user_names.values())
-                    await self.discord_bot.send_user_notification(username, "left", current_users)
+                    self.queue_discord_notification(username, "left", current_users)
             else:
                 # Still remove from mapping even if it's the bot
                 del self.user_names[user_id]
@@ -2810,9 +2893,9 @@ class ObjectionBot:
                         # Always show username changes, even in non-verbose mode
                         print(f"✏️ User changed name: {old_username} → {new_username}")
 
-                        # Send name change notification to Discord
+                        # Queue name change notification for Discord (preserves order, doesn't block WebSocket)
                         if self.discord_bot:
-                            await self.discord_bot.send_username_change_notification(old_username, new_username)
+                            self.queue_discord_username_change(old_username, new_username)
                     else:
                         log_verbose(f"🤖 Court bot name change ignored: {old_username} → {new_username}")
     
@@ -2844,6 +2927,25 @@ class ObjectionBot:
         if new_owner_id == self.user_id:
             print("🎯 Bot has been granted admin/owner status!")
             self.is_admin = True
+            
+            # Initialize room settings with admin permissions
+            print("[ADMIN] Initializing room settings...")
+            
+            # Set aspect ratio to 16:9
+            try:
+                await self.update_room_aspect_ratio("16:9")
+                print("[ADMIN] ✅ Set aspect ratio to 16:9")
+            except Exception as e:
+                print(f"[ADMIN] ⚠️ Failed to set aspect ratio: {e}")
+            
+            # Turn off restricting evidence
+            try:
+                update_data = {"restrictEvidence": False}
+                message = f'42["update_room",{json.dumps(update_data)}]'
+                await self.websocket.send(message)
+                print("[ADMIN] ✅ Disabled evidence restrictions")
+            except Exception as e:
+                print(f"[ADMIN] ⚠️ Failed to disable evidence restrictions: {e}")
             
             # Send notification to Discord
             if self.discord_bot and self.discord_bot.bridge_channel:
@@ -3003,6 +3105,90 @@ class ObjectionBot:
         # Update moderators on server
         return await self.update_moderators()
     
+    async def create_ban(self, user_id):
+        """Ban a user from the courtroom (admin only)"""
+        if not self.is_admin:
+            print("[BAN] Cannot ban user - bot is not admin")
+            return False
+        
+        if not self.connected or not self.websocket:
+            print("[BAN] Cannot ban user - not connected")
+            return False
+        
+        try:
+            # Send ban message via WebSocket
+            ban_data = {"userId": user_id}
+            message = f'42["create_ban",{json.dumps(ban_data)}]'
+            await self.websocket.send(message)
+            
+            username = self.user_names.get(user_id, f"User-{user_id[:8]}")
+            print(f"[BAN] Banned user: {username} ({user_id[:8]}...)")
+            return True
+        except Exception as e:
+            print(f"[BAN] Error banning user: {e}")
+            return False
+    
+    async def remove_ban(self, user_id):
+        """Unban a user from the courtroom (admin only)
+        
+        Uses the update_room_admin WebSocket message to update the ban list.
+        Format: 42["update_room_admin",{"bans":[...],"password":"","autoTransferAdmin":true},"roomCode"]
+        """
+        if not self.is_admin:
+            print("[UNBAN] Cannot unban user - bot is not admin")
+            return False
+        
+        if not self.connected or not self.websocket:
+            print("[UNBAN] Cannot unban user - not connected")
+            return False
+        
+        try:
+            # Find and remove the user from the banned_users list
+            user_to_unban = None
+            for ban in self.banned_users:
+                if ban.get('id') == user_id:
+                    user_to_unban = ban
+                    break
+            
+            if not user_to_unban:
+                print(f"[UNBAN] User ID {user_id[:8]}... not found in ban list")
+                return False
+            
+            # Create new ban list without the unbanned user
+            new_bans = [ban for ban in self.banned_users if ban.get('id') != user_id]
+            
+            # Send update_room_admin message with the new ban list
+            # Format: 42["update_room_admin",{"bans":[{"id":"...","username":"..."},...],"password":"","autoTransferAdmin":true},"roomCode"]
+            update_data = {
+                "bans": new_bans,
+                "password": "",  # Keep existing password (empty string means no change)
+                "autoTransferAdmin": True  # Keep auto-transfer enabled
+            }
+            message = f'42["update_room_admin",{json.dumps(update_data)},"{self.room_id}"]'
+            await self.websocket.send(message)
+            
+            # Update local ban list
+            username = user_to_unban.get('username', f"User-{user_id[:8]}")
+            self.banned_users = new_bans
+            print(f"[UNBAN] Unbanned user: {username} ({user_id[:8]}...)")
+            return True
+        except Exception as e:
+            print(f"[UNBAN] Error unbanning user: {e}")
+            return False
+    
+    def check_autoban(self, username):
+        """Check if a username matches any autoban pattern"""
+        for pattern in self.autoban_patterns:
+            try:
+                # Try to match as regex pattern
+                if re.search(pattern, username, re.IGNORECASE):
+                    return pattern
+            except re.error:
+                # If regex is invalid, try exact match (case-insensitive)
+                if pattern.lower() == username.lower():
+                    return pattern
+        return None
+    
     async def update_moderators(self):
         """Update the moderator list on the server"""
         if not self.is_admin:
@@ -3026,6 +3212,478 @@ class ObjectionBot:
         except Exception as e:
             print(f"[MOD] Failed to update moderators: {e}")
             return False
+    
+    def strip_color_codes(self, text):
+        """Remove objection.lol color codes from text for command parsing"""
+        return self._color_code_pattern.sub('', text)
+    
+    async def handle_8ball_command(self, user_id, text):
+        """Handle !8ball command - respond with a random 8-ball answer"""
+        # Strip color codes for clean command parsing
+        text = self.strip_color_codes(text)
+        
+        # Classic Magic 8-Ball responses
+        responses = [
+            # Affirmative
+            "It is certain.",
+            "It is decidedly so.",
+            "Without a doubt.",
+            "Yes, definitely.",
+            "You may rely on it.",
+            "As I see it, yes.",
+            "Most likely.",
+            "Outlook good.",
+            "Yes.",
+            "Signs point to yes.",
+            # Non-committal
+            "Reply hazy, try again.",
+            "Ask again later.",
+            "Better not tell you now.",
+            "Cannot predict now.",
+            "Concentrate and ask again.",
+            # Negative
+            "Don't count on it.",
+            "My reply is no.",
+            "My sources say no.",
+            "Outlook not so good.",
+            "Very doubtful."
+        ]
+        
+        response = random.choice(responses)
+        username = self.user_names.get(user_id, f"User-{user_id[:8]}")
+        
+        print(f"[8BALL] {username} asked: {text}")
+        print(f"[8BALL] Response: {response}")
+        
+        # Change to bot's default username for command responses
+        original_username = self.config.get('objection', 'bot_username')
+        await self.change_username_and_wait(original_username)
+        self._last_queued_username = None  # Reset so next Discord message changes username
+        
+        # Send the response to the courtroom
+        await self.send_message(f"🎱 {response}")
+        
+        # Also send the response to Discord so Discord users see it
+        if self.discord_bot and self.discord_bot.bridge_channel:
+            embed = discord.Embed(
+                title="🎱 Magic 8-Ball",
+                description=response,
+                color=0x000000  # Black like an 8-ball
+            )
+            embed.set_footer(text=f"Asked by {username} (in courtroom)")
+            await self.discord_bot.bridge_channel.send(embed=embed)
+    
+    async def handle_slap_command(self, user_id, text):
+        """Handle !slap command - slap someone with a fish"""
+        # Strip color codes for clean command parsing
+        text = self.strip_color_codes(text)
+        
+        username = self.user_names.get(user_id, f"User-{user_id[:8]}")
+        
+        # Extract the target name after !slap
+        text_lower = text.lower()
+        slap_index = text_lower.find('!slap')
+        target = text[slap_index + 5:].strip()  # Get everything after !slap
+        
+        if not target:
+            target = "themselves"
+        
+        # Fish only!
+        fish = [
+            "a large trout",
+            "a wet salmon",
+            "a slippery mackerel",
+            "an angry catfish",
+            "a frozen tuna",
+            "a flailing carp",
+            "a slimy eel",
+            "a smelly herring",
+            "a flopping bass",
+            "a massive halibut",
+            "a spiky pufferfish",
+            "a legendary swordfish",
+            "a majestic bluefin tuna",
+            "a wiggling sardine",
+            "a prehistoric coelacanth"
+        ]
+        
+        # Various action phrases
+        phrases = [
+            f"🐟 {username} slaps {target} with {{fish}}!",
+            f"🐟 {username} smacks {target} across the face with {{fish}}!",
+            f"🐟 {username} wallops {target} using {{fish}}!",
+            f"🐟 {username} whacks {target} upside the head with {{fish}}!",
+            f"🐟 {username} delivers a devastating blow to {target} with {{fish}}!",
+            f"🐟 {username} bonks {target} on the noggin with {{fish}}!",
+            f"🐟 {username} thwacks {target} silly with {{fish}}!",
+            f"🐟 *SLAP!* {username} hits {target} with {{fish}}!",
+            f"🐟 {username} winds up and absolutely CLOBBERS {target} with {{fish}}!",
+            f"🐟 {username} gently caresses {target}'s face with {{fish}}. Just kidding, it's a slap!",
+        ]
+        
+        chosen_fish = random.choice(fish)
+        response = random.choice(phrases).format(fish=chosen_fish)
+        
+        print(f"[SLAP] {username} slapped {target}")
+        
+        # Change to bot's default username for command responses
+        original_username = self.config.get('objection', 'bot_username')
+        await self.change_username_and_wait(original_username)
+        self._last_queued_username = None  # Reset so next Discord message changes username
+        
+        # Send the response to the courtroom
+        await self.send_message(response)
+        
+        # Also send the response to Discord
+        if self.discord_bot and self.discord_bot.bridge_channel:
+            embed = discord.Embed(
+                title="🐟 Fish Slap!",
+                description=response.replace("🐟 ", ""),  # Remove emoji for embed
+                color=0x3498db  # Blue like water
+            )
+            await self.discord_bot.bridge_channel.send(embed=embed)
+    
+    async def handle_roll_command(self, user_id, text):
+        """Handle !roll command - roll a number between 1-1000 (or custom range)"""
+        # Strip color codes for clean command parsing
+        text = self.strip_color_codes(text)
+        
+        username = self.user_names.get(user_id, f"User-{user_id[:8]}")
+        
+        # Default range
+        max_roll = 1000
+        
+        # Try to extract a custom max from the text
+        text_lower = text.lower()
+        roll_index = text_lower.find('!roll')
+        after_roll = text[roll_index + 5:].strip()
+        
+        # Check if there's a number after !roll
+        if after_roll:
+            # Try to parse the first number found
+            import re
+            match = re.search(r'\d+', after_roll)
+            if match:
+                parsed_max = int(match.group())
+                if 1 <= parsed_max <= 1000000:  # Reasonable limit
+                    max_roll = parsed_max
+        
+        result = random.randint(1, max_roll)
+        response = f"🎲 {username} rolls {result} (1-{max_roll})"
+        
+        print(f"[ROLL] {username} rolled {result} (1-{max_roll})")
+        
+        # Change to bot's default username for command responses
+        original_username = self.config.get('objection', 'bot_username')
+        await self.change_username_and_wait(original_username)
+        self._last_queued_username = None  # Reset so next Discord message changes username
+        
+        # Send the response to the courtroom
+        await self.send_message(response)
+        
+        # Also send the response to Discord
+        if self.discord_bot and self.discord_bot.bridge_channel:
+            embed = discord.Embed(
+                title="🎲 Dice Roll",
+                description=f"**{username}** rolls **{result}** (1-{max_roll})",
+                color=0x9b59b6  # Purple color
+            )
+            await self.discord_bot.bridge_channel.send(embed=embed)
+    
+    async def handle_need_command(self, user_id, text):
+        """Handle !need command - roll 1-100 for loot (Need roll)"""
+        # Strip color codes for clean command parsing
+        text = self.strip_color_codes(text)
+        
+        username = self.user_names.get(user_id, f"User-{user_id[:8]}")
+        
+        result = random.randint(1, 100)
+        response = f"🎯 {username} rolls Need: {result}"
+        
+        print(f"[NEED] {username} rolled {result}")
+        
+        # Change to bot's default username for command responses
+        original_username = self.config.get('objection', 'bot_username')
+        await self.change_username_and_wait(original_username)
+        self._last_queued_username = None  # Reset so next Discord message changes username
+        
+        # Send the response to the courtroom
+        await self.send_message(response)
+        
+        # Also send the response to Discord
+        if self.discord_bot and self.discord_bot.bridge_channel:
+            embed = discord.Embed(
+                title="🎯 Need Roll",
+                description=f"**{username}** rolls **{result}**",
+                color=0x2ecc71  # Green color
+            )
+            await self.discord_bot.bridge_channel.send(embed=embed)
+    
+    async def handle_greed_command(self, user_id, text):
+        """Handle !greed command - roll 1-100 for loot (Greed roll)"""
+        # Strip color codes for clean command parsing
+        text = self.strip_color_codes(text)
+        
+        username = self.user_names.get(user_id, f"User-{user_id[:8]}")
+        
+        result = random.randint(1, 100)
+        response = f"💰 {username} rolls Greed: {result}"
+        
+        print(f"[GREED] {username} rolled {result}")
+        
+        # Change to bot's default username for command responses
+        original_username = self.config.get('objection', 'bot_username')
+        await self.change_username_and_wait(original_username)
+        self._last_queued_username = None  # Reset so next Discord message changes username
+        
+        # Send the response to the courtroom
+        await self.send_message(response)
+        
+        # Also send the response to Discord
+        if self.discord_bot and self.discord_bot.bridge_channel:
+            embed = discord.Embed(
+                title="💰 Greed Roll",
+                description=f"**{username}** rolls **{result}**",
+                color=0xf1c40f  # Gold color
+            )
+            await self.discord_bot.bridge_channel.send(embed=embed)
+    
+    async def handle_random_bgm_command(self, user_id, text):
+        """Handle !bgm command - roll a random BGM and play it in the courtroom"""
+        username = self.user_names.get(user_id, f"User-{user_id[:8]}")
+        
+        print(f"[BGM] {username} requested random BGM")
+        
+        # Maximum BGM ID
+        max_bgm_id = 388326
+        batch_size = 10  # Check 10 IDs in parallel per batch
+        max_batches = 5  # Maximum 5 batches (50 total attempts)
+        
+        # Try to find a valid BGM using parallel validation
+        bgm_data = None
+        total_attempts = 0
+        
+        for batch_num in range(max_batches):
+            # Generate a batch of random IDs
+            random_ids = [random.randint(1, max_bgm_id) for _ in range(batch_size)]
+            total_attempts += batch_size
+            
+            # Validate all IDs in parallel
+            if self.discord_bot:
+                tasks = [self.discord_bot.fetch_music_url(rid, validate_url=True) for rid in random_ids]
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                
+                # Find the first valid result
+                for i, result in enumerate(results):
+                    if result and not isinstance(result, Exception):
+                        bgm_data = result
+                        print(f"[BGM] Found valid BGM after {batch_num * batch_size + i + 1} attempt(s): #{random_ids[i]} - {bgm_data['name']}")
+                        break
+                
+                if bgm_data:
+                    break
+        
+        if not bgm_data:
+            print(f"[BGM] Failed to find valid BGM after {total_attempts} attempts")
+            return
+        
+        # Change to bot's default username for command responses
+        original_username = self.config.get('objection', 'bot_username')
+        await self.change_username_and_wait(original_username)
+        self._last_queued_username = None  # Reset so next Discord message changes username
+        
+        # Send the BGM command to the courtroom
+        bgm_command = f"🎵 [#bgm{bgm_data['id']}]"
+        await self.send_message(bgm_command)
+        
+        # Also send the response to Discord
+        if self.discord_bot and self.discord_bot.bridge_channel:
+            embed = discord.Embed(
+                title="🎵 Random BGM Roll",
+                description=f"**{username}** rolled a random track!",
+                color=0x9b59b6  # Purple color
+            )
+            embed.add_field(
+                name="Track Name",
+                value=bgm_data['name'],
+                inline=True
+            )
+            embed.add_field(
+                name="Track ID",
+                value=f"#{bgm_data['id']}",
+                inline=True
+            )
+            embed.add_field(
+                name="Volume",
+                value=f"{bgm_data['volume']}%",
+                inline=True
+            )
+            embed.add_field(
+                name="Audio File",
+                value=bgm_data['url'],
+                inline=False
+            )
+            await self.discord_bot.bridge_channel.send(embed=embed)
+    
+    async def handle_random_bgs_command(self, user_id, text):
+        """Handle !bgs command - roll a random BGS/SFX and play it in the courtroom"""
+        username = self.user_names.get(user_id, f"User-{user_id[:8]}")
+        
+        print(f"[BGS] {username} requested random BGS/SFX")
+        
+        # Maximum BGS ID
+        max_bgs_id = 139315
+        batch_size = 10  # Check 10 IDs in parallel per batch
+        max_batches = 5  # Maximum 5 batches (50 total attempts)
+        
+        # Try to find a valid BGS using parallel validation
+        bgs_data = None
+        total_attempts = 0
+        
+        for batch_num in range(max_batches):
+            # Generate a batch of random IDs
+            random_ids = [random.randint(1, max_bgs_id) for _ in range(batch_size)]
+            total_attempts += batch_size
+            
+            # Validate all IDs in parallel
+            if self.discord_bot:
+                tasks = [self.discord_bot.fetch_sfx_url(rid, validate_url=True) for rid in random_ids]
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                
+                # Find the first valid result
+                for i, result in enumerate(results):
+                    if result and not isinstance(result, Exception):
+                        bgs_data = result
+                        print(f"[BGS] Found valid BGS after {batch_num * batch_size + i + 1} attempt(s): #{random_ids[i]} - {bgs_data['name']}")
+                        break
+                
+                if bgs_data:
+                    break
+        
+        if not bgs_data:
+            print(f"[BGS] Failed to find valid BGS after {total_attempts} attempts")
+            return
+        
+        # Change to bot's default username for command responses
+        original_username = self.config.get('objection', 'bot_username')
+        await self.change_username_and_wait(original_username)
+        self._last_queued_username = None  # Reset so next Discord message changes username
+        
+        # Send the BGS command to the courtroom
+        bgs_command = f"🔊 [#bgs{bgs_data['id']}]"
+        await self.send_message(bgs_command)
+        
+        # Also send the response to Discord
+        if self.discord_bot and self.discord_bot.bridge_channel:
+            embed = discord.Embed(
+                title="🔊 Random BGS Roll",
+                description=f"**{username}** rolled a random sound effect!",
+                color=0xe67e22  # Orange color
+            )
+            embed.add_field(
+                name="Sound Name",
+                value=bgs_data['name'],
+                inline=True
+            )
+            embed.add_field(
+                name="Sound ID",
+                value=f"#{bgs_data['id']}",
+                inline=True
+            )
+            embed.add_field(
+                name="Volume",
+                value=f"{bgs_data['volume']}%",
+                inline=True
+            )
+            embed.add_field(
+                name="Audio File",
+                value=bgs_data['url'],
+                inline=False
+            )
+            await self.discord_bot.bridge_channel.send(embed=embed)
+    
+    async def handle_random_evd_command(self, user_id, text):
+        """Handle !evd command - roll a random evidence and display it in the courtroom"""
+        username = self.user_names.get(user_id, f"User-{user_id[:8]}")
+        
+        print(f"[EVD] {username} requested random evidence")
+        
+        # Maximum evidence ID
+        max_evd_id = 946161
+        batch_size = 10  # Check 10 IDs in parallel per batch
+        max_batches = 5  # Maximum 5 batches (50 total attempts)
+        
+        # Try to find a valid evidence using parallel validation
+        evd_data = None
+        total_attempts = 0
+        
+        for batch_num in range(max_batches):
+            # Generate a batch of random IDs
+            random_ids = [random.randint(1, max_evd_id) for _ in range(batch_size)]
+            total_attempts += batch_size
+            
+            # Validate all IDs in parallel
+            if self.discord_bot:
+                tasks = [self.discord_bot.fetch_evidence_data(rid, validate_url=True) for rid in random_ids]
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                
+                # Find the first valid result
+                for i, result in enumerate(results):
+                    if result and not isinstance(result, Exception):
+                        evd_data = result
+                        print(f"[EVD] Found valid evidence after {batch_num * batch_size + i + 1} attempt(s): #{random_ids[i]} - {evd_data['name']}")
+                        break
+                
+                if evd_data:
+                    break
+        
+        if not evd_data:
+            print(f"[EVD] Failed to find valid evidence after {total_attempts} attempts")
+            return
+        
+        # Change to bot's default username for command responses
+        original_username = self.config.get('objection', 'bot_username')
+        await self.change_username_and_wait(original_username)
+        self._last_queued_username = None  # Reset so next Discord message changes username
+        
+        # Send the evidence command to the courtroom
+        evd_command = f"📄 [#evd{evd_data['id']}]"
+        await self.send_message(evd_command)
+        
+        # Also send the response to Discord
+        if self.discord_bot and self.discord_bot.bridge_channel:
+            embed = discord.Embed(
+                title="📄 Random Evidence Roll",
+                description=f"**{username}** rolled random evidence!",
+                color=0xe67e22  # Orange color
+            )
+            embed.add_field(
+                name="Evidence Name",
+                value=evd_data['name'],
+                inline=True
+            )
+            embed.add_field(
+                name="Evidence ID",
+                value=f"#{evd_data['id']}",
+                inline=True
+            )
+            embed.add_field(
+                name="Type",
+                value=evd_data['type'].capitalize(),
+                inline=True
+            )
+            
+            # Set the image in the embed if it's an image type
+            if evd_data['type'] == 'image':
+                embed.set_image(url=evd_data['url'])
+            else:
+                embed.add_field(
+                    name="Evidence File",
+                    value=evd_data['url'],
+                    inline=False
+                )
+            
+            await self.discord_bot.bridge_channel.send(embed=embed)
     
     async def _process_relay_queue(self):
         """
@@ -3083,6 +3741,73 @@ class ObjectionBot:
                 # Don't break - continue processing
         
         print("📋 Message queue processor stopped")
+    
+    async def _process_discord_queue(self):
+        """
+        Process Courtroom->Discord messages in order.
+        This ensures messages arrive in Discord in the same order they were sent from the courtroom,
+        while not blocking the WebSocket message loop (which needs to respond to pings quickly).
+        """
+        print("📤 Discord message queue processor started")
+        
+        while self.connected:
+            try:
+                # Get the next item from the queue (blocks until available)
+                queue_item = await self._discord_send_queue.get()
+                
+                # Check for shutdown signal
+                if queue_item is None:
+                    print("📤 Discord queue processor received shutdown signal")
+                    break
+                
+                # Unpack the queue item
+                send_type, args = queue_item
+                
+                try:
+                    if send_type == "message" and self.discord_bot:
+                        username, text, character_id, pose_id = args
+                        await self.discord_bot.send_to_discord(username, text, character_id, pose_id)
+                    elif send_type == "user_notification" and self.discord_bot:
+                        username, action, user_list = args
+                        await self.discord_bot.send_user_notification(username, action, user_list)
+                    elif send_type == "username_change" and self.discord_bot:
+                        old_username, new_username = args
+                        await self.discord_bot.send_username_change_notification(old_username, new_username)
+                except Exception as e:
+                    print(f"❌ Error sending to Discord: {e}")
+                
+                # Mark task as done
+                self._discord_send_queue.task_done()
+                
+            except asyncio.CancelledError:
+                print("📤 Discord queue processor cancelled")
+                break
+            except Exception as e:
+                print(f"❌ Error in Discord queue processor: {e}")
+                # Don't break - continue processing
+        
+        print("📤 Discord message queue processor stopped")
+    
+    def queue_discord_message(self, username, text, character_id=None, pose_id=None):
+        """Queue a message to be sent to Discord (preserves order)"""
+        try:
+            self._discord_send_queue.put_nowait(("message", (username, text, character_id, pose_id)))
+        except Exception as e:
+            print(f"❌ Failed to queue Discord message: {e}")
+    
+    def queue_discord_notification(self, username, action, user_list=None):
+        """Queue a user notification to be sent to Discord (preserves order)"""
+        try:
+            self._discord_send_queue.put_nowait(("user_notification", (username, action, user_list)))
+        except Exception as e:
+            print(f"❌ Failed to queue Discord notification: {e}")
+    
+    def queue_discord_username_change(self, old_username, new_username):
+        """Queue a username change notification to be sent to Discord (preserves order)"""
+        try:
+            self._discord_send_queue.put_nowait(("username_change", (old_username, new_username)))
+        except Exception as e:
+            print(f"❌ Failed to queue Discord username change: {e}")
     
     async def _send_username_change(self, new_username):
         """Internal method to change username (used by queue processor)"""
@@ -3268,6 +3993,21 @@ class ObjectionBot:
                 self._queue_processor_task.cancel()
                 try:
                     await self._queue_processor_task
+                except asyncio.CancelledError:
+                    pass
+        
+        # Stop the Discord queue processor
+        if self._discord_queue_processor_task and not self._discord_queue_processor_task.done():
+            print("🛑 Stopping Discord queue processor...")
+            await self._discord_send_queue.put(None)  # Send shutdown signal
+            try:
+                await asyncio.wait_for(self._discord_queue_processor_task, timeout=5.0)
+                print("✅ Discord queue processor stopped")
+            except asyncio.TimeoutError:
+                print("⚠️ Discord queue processor did not stop gracefully, cancelling...")
+                self._discord_queue_processor_task.cancel()
+                try:
+                    await self._discord_queue_processor_task
                 except asyncio.CancelledError:
                     pass
         
@@ -3818,6 +4558,183 @@ async def terminal_command_listener(objection_bot, discord_bot):
                     print("   ws 2  (ping)")
                     print("   ws 3  (pong)")
                     print("   ws 40  (handshake ack)")
+            elif cmd_lower.startswith("autoban "):
+                # Autoban pattern management commands
+                autoban_cmd = cmd[8:].strip()  # Remove "autoban " prefix
+                autoban_parts = autoban_cmd.split(" ", 1)
+                autoban_action = autoban_parts[0].lower() if autoban_parts else ""
+                autoban_arg = autoban_parts[1] if len(autoban_parts) > 1 else ""
+                
+                if autoban_action == "add" and autoban_arg:
+                    # Add a new autoban pattern
+                    pattern = autoban_arg
+                    # Validate regex pattern
+                    try:
+                        re.compile(pattern)
+                        if pattern not in objection_bot.autoban_patterns:
+                            objection_bot.autoban_patterns.append(pattern)
+                            save_autobans(objection_bot.autoban_patterns)
+                            print(f"✅ Added autoban pattern: '{pattern}'")
+                            print(f"   Total patterns: {len(objection_bot.autoban_patterns)}")
+                        else:
+                            print(f"⚠️ Pattern '{pattern}' already exists in autoban list")
+                    except re.error as e:
+                        print(f"❌ Invalid regex pattern: {e}")
+                        print("   Tip: For exact username match, just type the username")
+                        print("   Tip: For prefix match, use: ^prefix")
+                        print("   Tip: For suffix match, use: suffix$")
+                        print("   Tip: For contains match, just type the substring")
+                
+                elif autoban_action == "remove" and autoban_arg:
+                    # Remove an autoban pattern
+                    pattern = autoban_arg
+                    if pattern in objection_bot.autoban_patterns:
+                        objection_bot.autoban_patterns.remove(pattern)
+                        save_autobans(objection_bot.autoban_patterns)
+                        print(f"✅ Removed autoban pattern: '{pattern}'")
+                        print(f"   Remaining patterns: {len(objection_bot.autoban_patterns)}")
+                    else:
+                        print(f"❌ Pattern '{pattern}' not found in autoban list")
+                        if objection_bot.autoban_patterns:
+                            print("   Current patterns:")
+                            for i, p in enumerate(objection_bot.autoban_patterns, 1):
+                                print(f"      {i}. {p}")
+                
+                elif autoban_action == "list":
+                    # List all autoban patterns
+                    if objection_bot.autoban_patterns:
+                        print(f"🚫 Autoban Patterns ({len(objection_bot.autoban_patterns)}):")
+                        for i, pattern in enumerate(objection_bot.autoban_patterns, 1):
+                            print(f"   {i}. {pattern}")
+                    else:
+                        print("🚫 No autoban patterns configured")
+                        print("   Use 'autoban add <pattern>' to add one")
+                
+                elif autoban_action == "clear":
+                    # Clear all autoban patterns
+                    if objection_bot.autoban_patterns:
+                        count = len(objection_bot.autoban_patterns)
+                        objection_bot.autoban_patterns = []
+                        save_autobans(objection_bot.autoban_patterns)
+                        print(f"✅ Cleared all {count} autoban pattern(s)")
+                    else:
+                        print("⚠️ No autoban patterns to clear")
+                
+                elif autoban_action == "test" and autoban_arg:
+                    # Test if a username would be banned
+                    test_username = autoban_arg
+                    matched = objection_bot.check_autoban(test_username)
+                    if matched:
+                        print(f"🚫 Username '{test_username}' WOULD be banned")
+                        print(f"   Matched pattern: '{matched}'")
+                    else:
+                        print(f"✅ Username '{test_username}' would NOT be banned")
+                        print(f"   No patterns matched ({len(objection_bot.autoban_patterns)} patterns checked)")
+                
+                else:
+                    print("🚫 Autoban Commands:")
+                    print("  autoban add <pattern>    - Add a regex pattern to autoban list")
+                    print("  autoban remove <pattern> - Remove a pattern from autoban list")
+                    print("  autoban list             - List all autoban patterns")
+                    print("  autoban clear            - Clear all autoban patterns")
+                    print("  autoban test <username>  - Test if a username would be banned")
+                    print("\n📝 Pattern Examples:")
+                    print("  autoban add tesya        - Ban exact username 'tesya' (case-insensitive)")
+                    print("  autoban add ^tes         - Ban usernames starting with 'tes'")
+                    print("  autoban add bot$         - Ban usernames ending with 'bot'")
+                    print("  autoban add spam         - Ban usernames containing 'spam'")
+                    print("  autoban add ^test.*bot$  - Ban usernames starting with 'test' and ending with 'bot'")
+                    if not objection_bot.is_admin:
+                        print("\n⚠️ Note: Bot must be admin to execute bans")
+            
+            elif cmd_lower == "bans":
+                # Show current ban list
+                if objection_bot.connected:
+                    # Refresh room data to get latest ban list
+                    print("🔄 Refreshing ban list...")
+                    await objection_bot.refresh_room_data()
+                    await asyncio.sleep(0.5)  # Wait for response
+                    
+                    if objection_bot.banned_users:
+                        print(f"🚫 Banned Users ({len(objection_bot.banned_users)}):")
+                        for i, ban in enumerate(objection_bot.banned_users, 1):
+                            username = ban.get('username', 'Unknown')
+                            user_id = ban.get('id', 'Unknown')
+                            print(f"   {i}. {username} (ID: {user_id[:8]}...)")
+                    else:
+                        if objection_bot.is_admin:
+                            print("🚫 No users are currently banned from this courtroom.")
+                        else:
+                            print("🚫 No ban data available. Bot must be admin to view ban list.")
+                    
+                    if not objection_bot.is_admin:
+                        print("⚠️ Note: Ban list may not be accurate - bot is not admin")
+                else:
+                    print("❌ Not connected to objection.lol. Use 'reconnect' first.")
+            
+            elif cmd_lower.startswith("ban "):
+                # Ban a user by username
+                username_to_ban = cmd[4:].strip()  # Remove "ban " prefix
+                if username_to_ban:
+                    if objection_bot.connected:
+                        if objection_bot.is_admin:
+                            # Find user ID by username
+                            user_id = objection_bot.get_user_id_by_username(username_to_ban)
+                            if user_id:
+                                print(f"🚫 Banning user '{username_to_ban}' (ID: {user_id[:8]}...)")
+                                success = await objection_bot.create_ban(user_id)
+                                if success:
+                                    print(f"✅ Successfully banned '{username_to_ban}'")
+                                else:
+                                    print(f"❌ Failed to ban '{username_to_ban}'")
+                            else:
+                                print(f"❌ User '{username_to_ban}' not found in courtroom.")
+                                print("   Note: User must be in the room to ban them.")
+                                print("   Current users:")
+                                for uid, uname in objection_bot.user_names.items():
+                                    print(f"      - {uname}")
+                        else:
+                            print("❌ Bot is not admin. Cannot ban users.")
+                    else:
+                        print("❌ Not connected to objection.lol. Use 'reconnect' first.")
+                else:
+                    print("❌ Please provide a username after 'ban'. Example: ban TrollUser")
+            
+            elif cmd_lower.startswith("unban "):
+                # Unban a user by username
+                username_to_unban = cmd[6:].strip()  # Remove "unban " prefix
+                if username_to_unban:
+                    if objection_bot.connected:
+                        if objection_bot.is_admin:
+                            # Find the user in the ban list
+                            ban_to_remove = None
+                            for ban in objection_bot.banned_users:
+                                if ban.get('username', '').lower() == username_to_unban.lower():
+                                    ban_to_remove = ban
+                                    break
+                            
+                            if ban_to_remove:
+                                print(f"🔓 Unbanning user '{ban_to_remove.get('username')}' (ID: {ban_to_remove.get('id', '')[:8]}...)")
+                                success = await objection_bot.remove_ban(ban_to_remove.get('id'))
+                                if success:
+                                    print(f"✅ Successfully unbanned '{ban_to_remove.get('username')}'")
+                                else:
+                                    print(f"❌ Failed to unban '{username_to_unban}'")
+                            else:
+                                print(f"❌ User '{username_to_unban}' not found in ban list.")
+                                if objection_bot.banned_users:
+                                    print("   Currently banned users:")
+                                    for ban in objection_bot.banned_users:
+                                        print(f"      - {ban.get('username', 'Unknown')}")
+                                else:
+                                    print("   No users are currently banned.")
+                        else:
+                            print("❌ Bot is not admin. Cannot unban users.")
+                    else:
+                        print("❌ Not connected to objection.lol. Use 'reconnect' first.")
+                else:
+                    print("❌ Please provide a username after 'unban'. Example: unban TrollUser")
+            
             elif cmd_lower == "help":
                 print("Available commands:")
                 print("\n🔗 Connection:")
@@ -3835,10 +4752,20 @@ async def terminal_command_listener(objection_bot, discord_bot):
                 print("  slowmode <0-60>  - Set slow mode seconds (admin only)")
                 print("  textbox <style>  - Change textbox style (admin only)")
                 print("  aspect <ratio>   - Change aspect ratio (admin only)")
-                print("\n� Advanced:")
+                print("\n🚫 Ban Management:")
+                print("  bans             - Show banned users list")
+                print("  ban <username>   - Ban a user (admin only)")
+                print("  unban <username> - Unban a user (admin only)")
+                print("\n🤖 Autoban Commands:")
+                print("  autoban add <pattern>    - Add autoban pattern (regex)")
+                print("  autoban remove <pattern> - Remove autoban pattern")
+                print("  autoban list             - List all autoban patterns")
+                print("  autoban clear            - Clear all patterns")
+                print("  autoban test <username>  - Test if username would be banned")
+                print("\n📡 Advanced:")
                 print("  ws <message>     - Send raw WebSocket message")
                 print("  websocket <msg>  - Send raw WebSocket message (alias)")
-                print("\n�🛠️ Utility:")
+                print("\n🛠️ Utility:")
                 print("  config           - Show current configuration")
                 print("  debug            - Show debug information")
                 print("  clear            - Clear terminal screen")
