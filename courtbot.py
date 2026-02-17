@@ -4455,13 +4455,9 @@ class ObjectionBot:
             return False
 
     async def transfer_ownership(self, target_user_id):
-        """Transfer room ownership to another user (owner only)"""
+        """Transfer room ownership to another user"""
         if not self.connected or not self.websocket:
             print("[TRANSFER] Cannot transfer ownership - not connected")
-            return False
-        
-        if not self.is_admin:
-            print("[TRANSFER] Cannot transfer ownership - bot is not admin/owner")
             return False
         
         try:
@@ -4535,24 +4531,21 @@ async def terminal_command_listener(objection_bot, discord_bot):
                 username = cmd[9:].strip()  # Remove "transfer " prefix (preserving original case)
                 if username:
                     if objection_bot.connected:
-                        if objection_bot.is_admin:
-                            # Find user ID by username
-                            user_id = objection_bot.get_user_id_by_username(username)
-                            if user_id:
-                                print(f"🔄 Transferring ownership to '{username}' (ID: {user_id[:8]}...)")
-                                success = await objection_bot.transfer_ownership(user_id)
-                                if success:
-                                    print(f"✅ Ownership transfer initiated successfully!")
-                                    print(f"⚠️ Bot will no longer be admin after transfer completes.")
-                                else:
-                                    print(f"❌ Failed to transfer ownership.")
+                        # Find user ID by username
+                        user_id = objection_bot.get_user_id_by_username(username)
+                        if user_id:
+                            print(f"🔄 Transferring ownership to '{username}' (ID: {user_id[:8]}...)")
+                            success = await objection_bot.transfer_ownership(user_id)
+                            if success:
+                                print(f"✅ Ownership transfer initiated successfully!")
+                                print(f"⚠️ Bot will no longer be admin after transfer completes.")
                             else:
-                                print(f"❌ User '{username}' not found in courtroom.")
-                                print("Current users:")
-                                for uid, uname in objection_bot.user_names.items():
-                                    print(f"   - {uname} (ID: {uid[:8]}...)")
+                                print(f"❌ Failed to transfer ownership.")
                         else:
-                            print("❌ Bot is not admin/owner. Cannot transfer ownership.")
+                            print(f"❌ User '{username}' not found in courtroom.")
+                            print("Current users:")
+                            for uid, uname in objection_bot.user_names.items():
+                                print(f"   - {uname} (ID: {uid[:8]}...)")
                     else:
                         print("❌ Not connected to objection.lol. Use 'reconnect' first.")
                 else:
