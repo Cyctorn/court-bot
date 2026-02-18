@@ -2906,6 +2906,60 @@ class ObjectionBot:
         user_id = data.get('userId')
         text = data.get('text', '')
         
+        # --- Radio BGM state tracking (same as handle_message) ---
+        text_lower = text.lower()
+        bgm_matches = self._radio_bgm_pattern.findall(text)
+        if bgm_matches:
+            radio_bgm_numeric = self.radio_bgm_id.replace('#bgm', '')
+            has_radio_bgm = radio_bgm_numeric in bgm_matches
+            has_other_bgm = any(bgm_id != radio_bgm_numeric for bgm_id in bgm_matches)
+            
+            if has_radio_bgm and user_id == self.user_id:
+                self.radio_active = True
+                print(f"📻 Radio state (plain): ACTIVE (bot played radio BGM [{self.radio_bgm_id}])")
+            elif has_radio_bgm and user_id != self.user_id:
+                self.radio_active = True
+                print(f"📻 Radio state (plain): ACTIVE (user played radio BGM [{self.radio_bgm_id}])")
+            
+            if has_other_bgm and user_id != self.user_id:
+                self.radio_active = False
+                print(f"📻 Radio state (plain): INACTIVE (different BGM played by user)")
+            elif has_other_bgm and user_id == self.user_id:
+                if not has_radio_bgm:
+                    self.radio_active = False
+                    print(f"📻 Radio state (plain): INACTIVE (different BGM played by bot)")
+
+        # Check for chat commands in plain messages (same as handle_message)
+        # Plain messages come from users without a character/pose selected
+        bot_username = self.config.get('objection', 'bot_username').lower()
+        if 'jr' not in bot_username:
+            if '!8ball' in text_lower and '🎱' not in text:
+                await self.handle_8ball_command(user_id, text)
+            
+            if '!slap' in text_lower and '🐟' not in text:
+                await self.handle_slap_command(user_id, text)
+            
+            if '!roll' in text_lower and '🎲' not in text:
+                await self.handle_roll_command(user_id, text)
+            
+            if '!need' in text_lower and '🎯' not in text:
+                await self.handle_need_command(user_id, text)
+            
+            if '!greed' in text_lower and '💰' not in text:
+                await self.handle_greed_command(user_id, text)
+            
+            if '!bgm' in text_lower and '🎵' not in text:
+                await self.handle_random_bgm_command(user_id, text)
+            
+            if '!bgs' in text_lower and '🔊' not in text:
+                await self.handle_random_bgs_command(user_id, text)
+            
+            if '!evd' in text_lower and '📄' not in text:
+                await self.handle_random_evd_command(user_id, text)
+            
+            if '!radio' in text_lower and '📻' not in text:
+                await self.handle_radio_command(user_id, text)
+
         if user_id != self.user_id:
             # Check ignore patterns
             ignore_patterns = self.config.get('settings', 'ignore_patterns')
@@ -4238,14 +4292,19 @@ class ObjectionBot:
         await self.change_username_and_wait(original_username)
         self._last_queued_username = None  # Reset so next Discord message changes username
         
-        # Format and send the radio message with BGM command prefix
-        if artist:
-            radio_message = f"[{self.radio_bgm_id}] Ruff 🎵 This is CourtDog FM, you're listening to: {title} by {artist}"
-        else:
-            radio_message = f"[{self.radio_bgm_id}] Ruff 🎵 This is CourtDog FM, you're listening to: {title}"
+        # Send BGM command as a normal message (MUST be normal message for BGM to work)
+        bgm_command = f"[{self.radio_bgm_id}]"
+        await self.send_message(bgm_command)
+        print(f"[RADIO] Sent BGM command (normal message): {bgm_command}")
         
-        await self.send_message(radio_message)
-        print(f"[RADIO] Sent radio message: {radio_message}")
+        # Send the radio announcement as a plain message
+        if artist:
+            radio_announcement = f"📻 Ruff 🎵 This is CourtDog FM, you're listening to: {title} by {artist}"
+        else:
+            radio_announcement = f"📻 Ruff 🎵 This is CourtDog FM, you're listening to: {title}"
+        
+        await self.send_plain_message(radio_announcement)
+        print(f"[RADIO] Sent radio announcement (plain message): {radio_announcement}")
     
     async def start_webhook_server(self):
         """Start HTTP webhook server for radio song change notifications"""
@@ -4276,8 +4335,8 @@ class ObjectionBot:
                     else:
                         announcement = f"Ruff Ruff 🎵 Now Playing: {title}"
                     
-                    await self.send_message(announcement)
-                    print(f"📻 Sent radio announcement to courtroom: {announcement}")
+                    await self.send_plain_message(announcement)
+                    print(f"📻 Sent radio announcement to courtroom (plain): {announcement}")
                 else:
                     if not self.radio_active:
                         print(f"📻 Radio inactive, skipping courtroom announcement")
@@ -4426,6 +4485,40 @@ class ObjectionBot:
                     if self.auto_reconnect:
                         await self.start_auto_reconnect()
                 return False
+
+    async def send_plain_message(self, text):
+        """Send a plain message to the chatroom (no character/pose avatar)"""
+        async with self._message_lock:
+            if not self.connected:
+                print("❌ Not connected - cannot send plain message")
+                if self.auto_reconnect:
+                    await self.start_auto_reconnect()
+                return False
+                
+            if not self.websocket or self.websocket.close_code is not None:
+                print("❌ WebSocket connection lost - cannot send plain message")
+                self.connected = False
+                if self.auto_reconnect:
+                    await self.start_auto_reconnect()
+                return False
+                
+            message_data = {"text": text}
+            
+            try:
+                message = f'42["plain_message",{json.dumps(message_data)}]'
+                await self.websocket.send(message)
+                log_verbose(f"📤 Sent (plain): {text}")
+                await asyncio.sleep(0.05)
+                return True
+            except Exception as e:
+                print(f"❌ Plain send failed: {e}")
+                if "closed" in str(e).lower() or "disconnected" in str(e).lower():
+                    print("🔗 Send failure suggests connection loss - marking as disconnected")
+                    self.connected = False
+                    if self.auto_reconnect:
+                        await self.start_auto_reconnect()
+                return False
+
     def start_input_thread(self):
         """Start a thread to handle console input"""
         def input_worker():
