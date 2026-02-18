@@ -244,6 +244,14 @@ class Config:
             pings_str = os.getenv('ENABLE_PINGS').lower()
             self.data['settings']['enable_pings'] = pings_str in ('true', '1', 'yes', 'on')
             print(f"🌍 Pings loaded from environment variable: {self.data['settings']['enable_pings']}")
+        if os.getenv('COURTROOM_GREETING'):
+            greeting_str = os.getenv('COURTROOM_GREETING').lower()
+            self.data['settings']['courtroom_greeting'] = greeting_str in ('true', '1', 'yes', 'on')
+            print(f"🌍 Courtroom greeting loaded from environment variable: {self.data['settings']['courtroom_greeting']}")
+        if os.getenv('RADIO_ANNOUNCE_TRACKS'):
+            announce_str = os.getenv('RADIO_ANNOUNCE_TRACKS').lower()
+            self.data['settings']['radio_announce_tracks'] = announce_str in ('true', '1', 'yes', 'on')
+            print(f"🌍 Radio announce tracks loaded from environment variable: {self.data['settings']['radio_announce_tracks']}")
         
         print("🌍 Environment variable overrides applied")
     def create_default_config(self):
@@ -262,7 +270,9 @@ class Config:
                 "delete_commands": True,
                 "show_join_leave": True,
                 "verbose": False,
-                "enable_pings": False
+                "enable_pings": False,
+                "courtroom_greeting": True,
+                "radio_announce_tracks": True
             }
         }
         
@@ -2803,6 +2813,13 @@ class ObjectionBot:
         # --- Radio BGM state tracking ---
         # Monitor ALL incoming messages (including bot's own) for BGM patterns
         # to track whether the radio BGM is currently playing
+        
+        # Detect [#bgms] (BGM stop) — deactivate radio
+        if '[#bgms]' in text:
+            if self.radio_active:
+                self.radio_active = False
+                print(f"📻 Radio state: INACTIVE (BGM stopped via [#bgms])")
+        
         bgm_matches = self._radio_bgm_pattern.findall(text)
         if bgm_matches:
             # Check if any of the BGM commands match any radio BGM ID in the pool
@@ -2918,6 +2935,13 @@ class ObjectionBot:
         
         # --- Radio BGM state tracking (same as handle_message) ---
         text_lower = text.lower()
+        
+        # Detect [#bgms] (BGM stop) — deactivate radio
+        if '[#bgms]' in text:
+            if self.radio_active:
+                self.radio_active = False
+                print(f"📻 Radio state (plain): INACTIVE (BGM stopped via [#bgms])")
+        
         bgm_matches = self._radio_bgm_pattern.findall(text)
         if bgm_matches:
             radio_id_set = set(self.radio_bgm_ids)
@@ -4436,8 +4460,12 @@ class ObjectionBot:
                 
                 print(f"📻 Webhook received: {title}" + (f" by {artist}" if artist else ""))
                 
-                # Only send courtroom message if radio is active
-                if self.radio_active and self.connected:
+                # Only send courtroom message if radio is active AND track announcements are enabled
+                announce_tracks = self.config.get('settings', 'radio_announce_tracks')
+                if announce_tracks is None:
+                    announce_tracks = True  # default to enabled
+                
+                if self.radio_active and self.connected and announce_tracks:
                     # Pre-patch a random BGM URL for the next !radio call
                     await self.pick_and_patch_radio_bgm()
                     
@@ -4459,6 +4487,8 @@ class ObjectionBot:
                         print(f"📻 Radio inactive, skipping courtroom announcement")
                     elif not self.connected:
                         print(f"📻 Not connected, skipping courtroom announcement")
+                    elif not announce_tracks:
+                        print(f"📻 Track announcements disabled (RADIO_ANNOUNCE_TRACKS=false), skipping")
                 
                 return web.Response(text="OK", status=200)
             except Exception as e:
@@ -5354,12 +5384,14 @@ async def main():
         # Setup signal handlers for graceful shutdown
         setup_signal_handlers(asyncio.get_running_loop(), objection_bot, discord_bot)
         
-        # Send initial greeting
+        # Send initial greeting (if enabled)
         await asyncio.sleep(3)  # Wait for Discord bot to connect
-        # Revert to original bot username for initial greeting
         original_username = objection_bot.config.get('objection', 'bot_username')
         await objection_bot.change_username_and_wait(original_username)
-        await objection_bot.send_message("[#bgs20412]Ruff (Relaying messages)")
+        if config.get('settings', 'courtroom_greeting'):
+            await objection_bot.send_message("[#bgs20412]Ruff (Relaying messages)")
+        else:
+            print("📻 Courtroom greeting disabled via COURTROOM_GREETING=false")
         
         # Choose mode based on configuration
         mode = config.get('settings', 'mode')
