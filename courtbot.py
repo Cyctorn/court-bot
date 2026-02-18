@@ -2424,7 +2424,13 @@ class ObjectionBot:
         
         # Radio integration state
         self.radio_bgm_id = os.getenv('RADIO_BGM_ID', '#bgm392416')
+        self.radio_bgm_asset_id = os.getenv('RADIO_BGM_ASSET_ID', '')  # objection.lol asset ID to PATCH
+        self.radio_stream_base_url = os.getenv('RADIO_STREAM_BASE_URL', '')  # e.g. https://radio.cyctorn.tech/listen
         self.radio_api_url = os.getenv('RADIO_API_URL', 'http://courtfm:3000/api/now-streaming')
+        self.objection_email = os.getenv('OBJECTION_EMAIL', '')  # objection.lol login email
+        self.objection_password = os.getenv('OBJECTION_PASSWORD', '')  # objection.lol login password
+        self.objection_api_token = None  # JWT token, obtained via login
+        self.objection_token_expires = 0  # Unix timestamp when token expires
         self.radio_active = False  # Whether radio is currently playing in courtroom
         self.radio_last_title = None  # Last known track title from webhook
         self.radio_last_artist = None  # Last known track artist from webhook
@@ -4260,6 +4266,93 @@ class ObjectionBot:
             print("[PAIRING] Could not find pairId in pair_data, only sending leave_pair.")
             await self.websocket.send('42["leave_pair"]')
     
+    async def ensure_objection_token(self):
+        """Login to objection.lol if we don't have a valid token.
+        Returns True if we have a valid token, False otherwise."""
+        if not self.objection_email or not self.objection_password:
+            return False
+        
+        # Check if current token is still valid (with 5 min buffer)
+        if self.objection_api_token and time.time() < self.objection_token_expires - 300:
+            return True
+        
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    "https://objection.lol/api/auth/login",
+                    json={
+                        "email": self.objection_email,
+                        "password": self.objection_password
+                    },
+                    timeout=aiohttp.ClientTimeout(total=10)
+                ) as response:
+                    if response.status == 201:
+                        data = await response.json()
+                        self.objection_api_token = f"Bearer {data['token']}"
+                        # Token expires in ~8 hours, parse from JWT or just set 7h from now
+                        self.objection_token_expires = time.time() + 7 * 3600
+                        print(f"[RADIO] Logged into objection.lol successfully")
+                        return True
+                    else:
+                        body = await response.text()
+                        print(f"[RADIO] objection.lol login failed (status {response.status}): {body}")
+                        return False
+        except Exception as e:
+            print(f"[RADIO] objection.lol login error: {e}")
+            return False
+
+    async def rotate_radio_bgm_url(self):
+        """PATCH the radio BGM entry on objection.lol with a random URL to bust cache.
+        Each call generates a unique /listen/<random>.mp3 path so the courtroom player
+        treats it as a completely new audio resource."""
+        if not self.radio_bgm_asset_id or not self.radio_stream_base_url:
+            print("[RADIO] Skipping BGM URL rotation (missing RADIO_BGM_ASSET_ID or RADIO_STREAM_BASE_URL)")
+            return False
+        
+        # Ensure we have a valid API token
+        if not await self.ensure_objection_token():
+            print("[RADIO] Skipping BGM URL rotation (no valid token)")
+            return False
+        
+        # Generate a random unique path
+        uid = f"{int(time.time())}-{random.randint(100000, 999999)}"
+        new_url = f"{self.radio_stream_base_url}/{uid}.mp3"
+        
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.patch(
+                    f"https://objection.lol/api/assets/music/{self.radio_bgm_asset_id}",
+                    json={
+                        "id": int(self.radio_bgm_asset_id),
+                        "name": "CourtDog FM",
+                        "url": new_url,
+                        "volume": 75
+                    },
+                    headers={
+                        "Authorization": self.objection_api_token,
+                        "Content-Type": "application/json"
+                    },
+                    timeout=aiohttp.ClientTimeout(total=10)
+                ) as response:
+                    if response.status == 200:
+                        print(f"[RADIO] Rotated BGM URL to: {new_url}")
+                        return True
+                    elif response.status == 401:
+                        # Token expired mid-session, force re-login
+                        print("[RADIO] Token expired, re-authenticating...")
+                        self.objection_api_token = None
+                        self.objection_token_expires = 0
+                        if await self.ensure_objection_token():
+                            return await self.rotate_radio_bgm_url()  # Retry once
+                        return False
+                    else:
+                        body = await response.text()
+                        print(f"[RADIO] Failed to rotate BGM URL (status {response.status}): {body}")
+                        return False
+        except Exception as e:
+            print(f"[RADIO] Error rotating BGM URL: {e}")
+            return False
+
     async def handle_radio_command(self, user_id, text):
         """Handle !radio command - start playing the radio in the courtroom"""
         username = self.user_names.get(user_id, f"User-{user_id[:8]}")
@@ -4268,6 +4361,9 @@ class ObjectionBot:
         
         # Set radio state to active
         self.radio_active = True
+        
+        # Rotate the BGM URL on objection.lol so the player gets a fresh stream connection
+        await self.rotate_radio_bgm_url()
         
         # Try to get current track info from stored state first, then fallback to API
         title = self.radio_last_title
@@ -4324,6 +4420,9 @@ class ObjectionBot:
                 
                 # Only send courtroom message if radio is active
                 if self.radio_active and self.connected:
+                    # Rotate BGM URL so the courtroom player gets a fresh stream
+                    await self.rotate_radio_bgm_url()
+                    
                     # Revert to bot username for radio announcements
                     original_username = self.config.get('objection', 'bot_username')
                     await self.change_username_and_wait(original_username)
