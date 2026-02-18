@@ -4299,9 +4299,9 @@ class ObjectionBot:
         
         # Send combined BGM + announcement as a single normal message (BGM tag must be in a normal message to work)
         if artist:
-            radio_announcement = f"📻 Ruff 🎵 (This is CourtDog FM, you're listening to: {title} by {artist}) [{self.radio_bgm_id}]"
+            radio_announcement = f"[#ts1]📻 Ruff 🎵 (This is CourtDog FM, you're listening to: {title} by {artist}) [{self.radio_bgm_id}]"
         else:
-            radio_announcement = f"📻 Ruff 🎵 (This is CourtDog FM, you're listening to: {title}) [{self.radio_bgm_id}]"
+            radio_announcement = f"[#ts1]📻 Ruff 🎵 (This is CourtDog FM, you're listening to: {title}) [{self.radio_bgm_id}]"
         
         await self.send_message(radio_announcement)
         print(f"[RADIO] Sent radio announcement with BGM: {radio_announcement}")
@@ -4331,9 +4331,9 @@ class ObjectionBot:
                     
                     # Format announcement
                     if artist:
-                        announcement = f"Ruff 🎵 (Now Playing: {title} by {artist})"
+                        announcement = f"Ruff 🎵 (Next up: {title} by {artist})"
                     else:
-                        announcement = f"Ruff 🎵 (Now Playing: {title})"
+                        announcement = f"Ruff 🎵 (Next up: {title})"
                     
                     await self.send_plain_message(announcement)
                     print(f"📻 Sent radio announcement to courtroom (plain): {announcement}")
