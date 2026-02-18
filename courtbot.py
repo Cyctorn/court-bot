@@ -4388,9 +4388,15 @@ class ObjectionBot:
                     async with session.get(self.radio_api_url, timeout=aiohttp.ClientTimeout(total=5)) as response:
                         if response.status == 200:
                             data = await response.json()
-                            title = data.get('title', 'Unknown')
-                            artist = data.get('artist', '')
-                            print(f"[RADIO] Fetched current track from API: {title} by {artist}")
+                            track = data.get('track')
+                            if track and data.get('is_streaming'):
+                                title = track.get('title', 'Unknown')
+                                artist = track.get('artist', '')
+                                print(f"[RADIO] Fetched current track from API: {title}" + (f" by {artist}" if artist else ""))
+                            else:
+                                title = 'Unknown'
+                                artist = ''
+                                print(f"[RADIO] No track currently streaming")
                         else:
                             title = 'Unknown'
                             artist = ''
