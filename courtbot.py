@@ -2860,9 +2860,11 @@ class ObjectionBot:
             if '!evd' in text_lower and '📄' not in text:
                 await self.handle_random_evd_command(user_id, text)
             
-            # !radio command - skip if message contains 📻 (prevents feedback loop)
-            if '!radio' in text_lower and '📻' not in text:
-                await self.handle_radio_command(user_id, text)
+            # !radio command is handled outside the jr gate (Jr bot handles radio)
+        
+        # !radio command - skip if message contains 📻 (prevents feedback loop)
+        if '!radio' in text_lower and '📻' not in text:
+            await self.handle_radio_command(user_id, text)
 
         if user_id != self.user_id:
             # Check ignore patterns 
@@ -2957,8 +2959,11 @@ class ObjectionBot:
             if '!evd' in text_lower and '📄' not in text:
                 await self.handle_random_evd_command(user_id, text)
             
-            if '!radio' in text_lower and '📻' not in text:
-                await self.handle_radio_command(user_id, text)
+            # !radio command is handled outside the jr gate (Jr bot handles radio)
+        
+        # !radio command - skip if message contains 📻 (prevents feedback loop)
+        if '!radio' in text_lower and '📻' not in text:
+            await self.handle_radio_command(user_id, text)
 
         if user_id != self.user_id:
             # Check ignore patterns
@@ -4292,19 +4297,14 @@ class ObjectionBot:
         await self.change_username_and_wait(original_username)
         self._last_queued_username = None  # Reset so next Discord message changes username
         
-        # Send BGM command as a normal message (MUST be normal message for BGM to work)
-        bgm_command = f"[{self.radio_bgm_id}]"
-        await self.send_message(bgm_command)
-        print(f"[RADIO] Sent BGM command (normal message): {bgm_command}")
-        
-        # Send the radio announcement as a plain message
+        # Send combined BGM + announcement as a single normal message (BGM tag must be in a normal message to work)
         if artist:
-            radio_announcement = f"📻 Ruff 🎵 This is CourtDog FM, you're listening to: {title} by {artist}"
+            radio_announcement = f"📻 Ruff 🎵 (This is CourtDog FM, you're listening to: {title} by {artist}) [{self.radio_bgm_id}]"
         else:
-            radio_announcement = f"📻 Ruff 🎵 This is CourtDog FM, you're listening to: {title}"
+            radio_announcement = f"📻 Ruff 🎵 (This is CourtDog FM, you're listening to: {title}) [{self.radio_bgm_id}]"
         
-        await self.send_plain_message(radio_announcement)
-        print(f"[RADIO] Sent radio announcement (plain message): {radio_announcement}")
+        await self.send_message(radio_announcement)
+        print(f"[RADIO] Sent radio announcement with BGM: {radio_announcement}")
     
     async def start_webhook_server(self):
         """Start HTTP webhook server for radio song change notifications"""
@@ -4331,9 +4331,9 @@ class ObjectionBot:
                     
                     # Format announcement
                     if artist:
-                        announcement = f"Ruff Ruff 🎵 Now Playing: {title} by {artist}"
+                        announcement = f"Ruff 🎵 (Now Playing: {title} by {artist})"
                     else:
-                        announcement = f"Ruff Ruff 🎵 Now Playing: {title}"
+                        announcement = f"Ruff 🎵 (Now Playing: {title})"
                     
                     await self.send_plain_message(announcement)
                     print(f"📻 Sent radio announcement to courtroom (plain): {announcement}")
