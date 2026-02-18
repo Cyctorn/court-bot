@@ -2423,8 +2423,10 @@ class ObjectionBot:
         self._color_code_pattern = re.compile(r'\[#/[a-zA-Z]\]|\[#/c[a-fA-F0-9]{6}\]|\[/#\]|\[#ts\d+\]')
         
         # Radio integration state
-        self.radio_bgm_id = os.getenv('RADIO_BGM_ID', '#bgm392416')
-        self.radio_bgm_asset_id = os.getenv('RADIO_BGM_ASSET_ID', '')  # objection.lol asset ID to PATCH
+        # RADIO_BGM_IDS is a comma-separated list of objection.lol BGM asset IDs
+        # The bot picks a random one each time !radio is called to bust the player cache
+        bgm_ids_str = os.getenv('RADIO_BGM_IDS', '')
+        self.radio_bgm_ids = [id.strip() for id in bgm_ids_str.split(',') if id.strip()] if bgm_ids_str else []
         self.radio_stream_base_url = os.getenv('RADIO_STREAM_BASE_URL', '')  # e.g. https://radio.cyctorn.tech/listen
         self.radio_api_url = os.getenv('RADIO_API_URL', 'http://courtfm:3000/api/now-streaming')
         self.objection_email = os.getenv('OBJECTION_EMAIL', '')  # objection.lol login email
@@ -2435,6 +2437,8 @@ class ObjectionBot:
         self.radio_last_title = None  # Last known track title from webhook
         self.radio_last_artist = None  # Last known track artist from webhook
         self._radio_bgm_pattern = re.compile(r'\[#bgm(\d+)\]')  # Pattern to detect BGM commands in messages
+        if self.radio_bgm_ids:
+            print(f"📻 Radio BGM pool: {len(self.radio_bgm_ids)} entries (IDs {self.radio_bgm_ids[0]}..{self.radio_bgm_ids[-1]})")
     
     async def connect_to_room(self):
         """Connect to the courtroom WebSocket using raw websockets"""
@@ -2801,21 +2805,19 @@ class ObjectionBot:
         # to track whether the radio BGM is currently playing
         bgm_matches = self._radio_bgm_pattern.findall(text)
         if bgm_matches:
-            # Extract the radio BGM numeric ID from the env var (e.g., '#bgm392416' -> '392416')
-            radio_bgm_numeric = self.radio_bgm_id.replace('#bgm', '')
-            
-            # Check if any of the BGM commands match the radio BGM ID
-            has_radio_bgm = radio_bgm_numeric in bgm_matches
-            has_other_bgm = any(bgm_id != radio_bgm_numeric for bgm_id in bgm_matches)
+            # Check if any of the BGM commands match any radio BGM ID in the pool
+            radio_id_set = set(self.radio_bgm_ids)
+            has_radio_bgm = any(bgm_id in radio_id_set for bgm_id in bgm_matches)
+            has_other_bgm = any(bgm_id not in radio_id_set for bgm_id in bgm_matches)
             
             if has_radio_bgm and user_id == self.user_id:
-                # Bot sent the radio BGM itself (e.g., via !radio command) - activate radio
+                # Bot sent a radio BGM itself (e.g., via !radio command) - activate radio
                 self.radio_active = True
-                print(f"📻 Radio state: ACTIVE (bot played radio BGM [{self.radio_bgm_id}])")
+                print(f"📻 Radio state: ACTIVE (bot played radio BGM)")
             elif has_radio_bgm and user_id != self.user_id:
-                # Someone else played the radio BGM - activate radio
+                # Someone else played a radio BGM - activate radio
                 self.radio_active = True
-                print(f"📻 Radio state: ACTIVE (user played radio BGM [{self.radio_bgm_id}])")
+                print(f"📻 Radio state: ACTIVE (user played radio BGM)")
             
             if has_other_bgm and user_id != self.user_id:
                 # Someone else played a DIFFERENT BGM - deactivate radio
@@ -2918,16 +2920,16 @@ class ObjectionBot:
         text_lower = text.lower()
         bgm_matches = self._radio_bgm_pattern.findall(text)
         if bgm_matches:
-            radio_bgm_numeric = self.radio_bgm_id.replace('#bgm', '')
-            has_radio_bgm = radio_bgm_numeric in bgm_matches
-            has_other_bgm = any(bgm_id != radio_bgm_numeric for bgm_id in bgm_matches)
+            radio_id_set = set(self.radio_bgm_ids)
+            has_radio_bgm = any(bgm_id in radio_id_set for bgm_id in bgm_matches)
+            has_other_bgm = any(bgm_id not in radio_id_set for bgm_id in bgm_matches)
             
             if has_radio_bgm and user_id == self.user_id:
                 self.radio_active = True
-                print(f"📻 Radio state (plain): ACTIVE (bot played radio BGM [{self.radio_bgm_id}])")
+                print(f"📻 Radio state (plain): ACTIVE (bot played radio BGM)")
             elif has_radio_bgm and user_id != self.user_id:
                 self.radio_active = True
-                print(f"📻 Radio state (plain): ACTIVE (user played radio BGM [{self.radio_bgm_id}])")
+                print(f"📻 Radio state (plain): ACTIVE (user played radio BGM)")
             
             if has_other_bgm and user_id != self.user_id:
                 self.radio_active = False
@@ -4301,60 +4303,65 @@ class ObjectionBot:
             print(f"[RADIO] objection.lol login error: {e}")
             return False
 
-    async def rotate_radio_bgm_url(self):
-        """PATCH the radio BGM entry on objection.lol with a random URL to bust cache.
-        Each call generates a unique /listen/<random>.mp3 path so the courtroom player
-        treats it as a completely new audio resource."""
-        if not self.radio_bgm_asset_id or not self.radio_stream_base_url:
-            print("[RADIO] Skipping BGM URL rotation (missing RADIO_BGM_ASSET_ID or RADIO_STREAM_BASE_URL)")
-            return False
+    async def pick_and_patch_radio_bgm(self):
+        """Pick a random BGM ID from the pool, PATCH its URL with a unique path,
+        and return the BGM ID to use. Returns the chosen BGM ID string or None on failure."""
+        if not self.radio_bgm_ids or not self.radio_stream_base_url:
+            print("[RADIO] Skipping BGM rotation (missing RADIO_BGM_IDS or RADIO_STREAM_BASE_URL)")
+            return None
         
         # Ensure we have a valid API token
         if not await self.ensure_objection_token():
-            print("[RADIO] Skipping BGM URL rotation (no valid token)")
-            return False
+            print("[RADIO] Skipping BGM rotation (no valid token)")
+            return None
         
-        # Generate a random unique path
+        # Pick a random BGM ID from the pool
+        chosen_id = random.choice(self.radio_bgm_ids)
+        
+        # Generate a random unique URL path
         uid = f"{int(time.time())}-{random.randint(100000, 999999)}"
         new_url = f"{self.radio_stream_base_url}/{uid}.mp3"
         
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.patch(
-                    f"https://objection.lol/api/assets/music/{self.radio_bgm_asset_id}",
+                    f"https://objection.lol/api/assets/music/{chosen_id}",
                     json={
-                        "id": int(self.radio_bgm_asset_id),
+                        "id": int(chosen_id),
                         "name": "CourtDog FM",
                         "url": new_url,
                         "volume": 75
                     },
                     headers={
                         "Authorization": self.objection_api_token,
-                        "Content-Type": "application/json"
+                        "Content-Type": "application/json",
+                        "Origin": "https://objection.lol",
+                        "Referer": "https://objection.lol/",
                     },
                     timeout=aiohttp.ClientTimeout(total=10)
                 ) as response:
                     if response.status == 200:
-                        print(f"[RADIO] Rotated BGM URL to: {new_url}")
-                        return True
+                        print(f"[RADIO] Picked BGM #{chosen_id}, URL: {new_url}")
+                        return chosen_id
                     elif response.status == 401:
                         # Token expired mid-session, force re-login
                         print("[RADIO] Token expired, re-authenticating...")
                         self.objection_api_token = None
                         self.objection_token_expires = 0
                         if await self.ensure_objection_token():
-                            return await self.rotate_radio_bgm_url()  # Retry once
-                        return False
+                            return await self.pick_and_patch_radio_bgm()  # Retry once
+                        return None
                     else:
                         body = await response.text()
-                        print(f"[RADIO] Failed to rotate BGM URL (status {response.status}): {body}")
-                        return False
+                        print(f"[RADIO] Failed to PATCH BGM #{chosen_id} (status {response.status}): {body}")
+                        return None
         except Exception as e:
-            print(f"[RADIO] Error rotating BGM URL: {e}")
-            return False
+            print(f"[RADIO] Error patching BGM #{chosen_id}: {e}")
+            return None
 
     async def handle_radio_command(self, user_id, text):
-        """Handle !radio command - start playing the radio in the courtroom"""
+        """Handle !radio command - start playing the radio in the courtroom.
+        Picks a random BGM ID from the pool, PATCHes its URL, and sends the BGM command."""
         username = self.user_names.get(user_id, f"User-{user_id[:8]}")
         
         print(f"[RADIO] {username} requested radio")
@@ -4362,8 +4369,13 @@ class ObjectionBot:
         # Set radio state to active
         self.radio_active = True
         
-        # Rotate the BGM URL on objection.lol so the player gets a fresh stream connection
-        await self.rotate_radio_bgm_url()
+        # Pick a random BGM from the pool and PATCH its URL
+        chosen_bgm_id = await self.pick_and_patch_radio_bgm()
+        if not chosen_bgm_id:
+            # Fallback: use first ID without patching
+            chosen_bgm_id = self.radio_bgm_ids[0] if self.radio_bgm_ids else '392556'
+        
+        bgm_tag = f"#bgm{chosen_bgm_id}"
         
         # Try to get current track info from stored state first, then fallback to API
         title = self.radio_last_title
@@ -4395,9 +4407,9 @@ class ObjectionBot:
         
         # Send combined BGM + announcement as a single normal message (BGM tag must be in a normal message to work)
         if artist:
-            radio_announcement = f"[#ts1]📻 Ruff 🎵 (This is CourtDog FM, you're listening to: {title} by {artist}) [{self.radio_bgm_id}]"
+            radio_announcement = f"[#ts1]📻 Ruff 🎵 (This is CourtDog FM, you're listening to: {title} by {artist}) [{bgm_tag}]"
         else:
-            radio_announcement = f"[#ts1]📻 Ruff 🎵 (This is CourtDog FM, you're listening to: {title}) [{self.radio_bgm_id}]"
+            radio_announcement = f"[#ts1]📻 Ruff 🎵 (This is CourtDog FM, you're listening to: {title}) [{bgm_tag}]"
         
         await self.send_message(radio_announcement)
         print(f"[RADIO] Sent radio announcement with BGM: {radio_announcement}")
@@ -4420,8 +4432,8 @@ class ObjectionBot:
                 
                 # Only send courtroom message if radio is active
                 if self.radio_active and self.connected:
-                    # Rotate BGM URL so the courtroom player gets a fresh stream
-                    await self.rotate_radio_bgm_url()
+                    # Pre-patch a random BGM URL for the next !radio call
+                    await self.pick_and_patch_radio_bgm()
                     
                     # Revert to bot username for radio announcements
                     original_username = self.config.get('objection', 'bot_username')
