@@ -10,6 +10,7 @@ import os
 import aioconsole
 import sys
 import aiohttp
+from aiohttp import web
 import re
 import signal
 import time
@@ -2420,6 +2421,14 @@ class ObjectionBot:
         # Pre-compile regex patterns for performance
         self._mention_pattern = re.compile(r'<@\d+>')
         self._color_code_pattern = re.compile(r'\[#/[a-zA-Z]\]|\[#/c[a-fA-F0-9]{6}\]|\[/#\]|\[#ts\d+\]')
+        
+        # Radio integration state
+        self.radio_bgm_id = os.getenv('RADIO_BGM_ID', '#bgm392416')
+        self.radio_api_url = os.getenv('RADIO_API_URL', 'http://courtfm:3000/api/now-streaming')
+        self.radio_active = False  # Whether radio is currently playing in courtroom
+        self.radio_last_title = None  # Last known track title from webhook
+        self.radio_last_artist = None  # Last known track artist from webhook
+        self._radio_bgm_pattern = re.compile(r'\[#bgm(\d+)\]')  # Pattern to detect BGM commands in messages
     
     async def connect_to_room(self):
         """Connect to the courtroom WebSocket using raw websockets"""
@@ -2484,6 +2493,9 @@ class ObjectionBot:
                     # Start the Discord send queue processor (ensures message order)
                     self._discord_queue_processor_task = asyncio.create_task(self._process_discord_queue())
                     print("📤 Started Discord message queue processor")
+                    
+                    # Start webhook server for radio notifications
+                    asyncio.create_task(self.start_webhook_server())
                     
                     return True
                 else:
@@ -2778,6 +2790,37 @@ class ObjectionBot:
             await self.handle_mod_request(user_id)
             return
 
+        # --- Radio BGM state tracking ---
+        # Monitor ALL incoming messages (including bot's own) for BGM patterns
+        # to track whether the radio BGM is currently playing
+        bgm_matches = self._radio_bgm_pattern.findall(text)
+        if bgm_matches:
+            # Extract the radio BGM numeric ID from the env var (e.g., '#bgm392416' -> '392416')
+            radio_bgm_numeric = self.radio_bgm_id.replace('#bgm', '')
+            
+            # Check if any of the BGM commands match the radio BGM ID
+            has_radio_bgm = radio_bgm_numeric in bgm_matches
+            has_other_bgm = any(bgm_id != radio_bgm_numeric for bgm_id in bgm_matches)
+            
+            if has_radio_bgm and user_id == self.user_id:
+                # Bot sent the radio BGM itself (e.g., via !radio command) - activate radio
+                self.radio_active = True
+                print(f"📻 Radio state: ACTIVE (bot played radio BGM [{self.radio_bgm_id}])")
+            elif has_radio_bgm and user_id != self.user_id:
+                # Someone else played the radio BGM - activate radio
+                self.radio_active = True
+                print(f"📻 Radio state: ACTIVE (user played radio BGM [{self.radio_bgm_id}])")
+            
+            if has_other_bgm and user_id != self.user_id:
+                # Someone else played a DIFFERENT BGM - deactivate radio
+                self.radio_active = False
+                print(f"📻 Radio state: INACTIVE (different BGM played by user)")
+            elif has_other_bgm and user_id == self.user_id:
+                # Bot played a different BGM (e.g., !bgm command) - only deactivate if no radio BGM also present
+                if not has_radio_bgm:
+                    self.radio_active = False
+                    print(f"📻 Radio state: INACTIVE (different BGM played by bot)")
+
         # Check for chat commands (only if bot name doesn't contain "jr" - junior bots don't respond)
         # Use "in" instead of "startswith" to handle color codes before the command
         # Allow commands from anyone including the bot itself (for Discord relay)
@@ -2816,6 +2859,10 @@ class ObjectionBot:
             # !evd command - skip if message contains 📄 (prevents feedback loop)
             if '!evd' in text_lower and '📄' not in text:
                 await self.handle_random_evd_command(user_id, text)
+            
+            # !radio command - skip if message contains 📻 (prevents feedback loop)
+            if '!radio' in text_lower and '📻' not in text:
+                await self.handle_radio_command(user_id, text)
 
         if user_id != self.user_id:
             # Check ignore patterns 
@@ -4154,9 +4201,113 @@ class ObjectionBot:
             print("[PAIRING] Could not find pairId in pair_data, only sending leave_pair.")
             await self.websocket.send('42["leave_pair"]')
     
+    async def handle_radio_command(self, user_id, text):
+        """Handle !radio command - start playing the radio in the courtroom"""
+        username = self.user_names.get(user_id, f"User-{user_id[:8]}")
+        
+        print(f"[RADIO] {username} requested radio")
+        
+        # Set radio state to active
+        self.radio_active = True
+        
+        # Try to get current track info from stored state first, then fallback to API
+        title = self.radio_last_title
+        artist = self.radio_last_artist
+        
+        if not title:
+            # Fetch from radio API as fallback
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(self.radio_api_url, timeout=aiohttp.ClientTimeout(total=5)) as response:
+                        if response.status == 200:
+                            data = await response.json()
+                            title = data.get('title', 'Unknown')
+                            artist = data.get('artist', '')
+                            print(f"[RADIO] Fetched current track from API: {title} by {artist}")
+                        else:
+                            title = 'Unknown'
+                            artist = ''
+                            print(f"[RADIO] API returned status {response.status}, using defaults")
+            except Exception as e:
+                title = 'Unknown'
+                artist = ''
+                print(f"[RADIO] Failed to fetch from API: {e}")
+        
+        # Change to bot's default username for command responses
+        original_username = self.config.get('objection', 'bot_username')
+        await self.change_username_and_wait(original_username)
+        self._last_queued_username = None  # Reset so next Discord message changes username
+        
+        # Format and send the radio message with BGM command prefix
+        if artist:
+            radio_message = f"[{self.radio_bgm_id}] Ruff 🎵 This is CourtDog FM, you're listening to: {title} by {artist}"
+        else:
+            radio_message = f"[{self.radio_bgm_id}] Ruff 🎵 This is CourtDog FM, you're listening to: {title}"
+        
+        await self.send_message(radio_message)
+        print(f"[RADIO] Sent radio message: {radio_message}")
+    
+    async def start_webhook_server(self):
+        """Start HTTP webhook server for radio song change notifications"""
+        webhook_port = int(os.getenv('WEBHOOK_PORT', '5050'))
+        
+        async def handle_now_playing(request):
+            try:
+                data = await request.json()
+                title = data.get('title', 'Unknown')
+                artist = data.get('artist', '')
+                
+                # Store last known track info for !radio command
+                self.radio_last_title = title
+                self.radio_last_artist = artist
+                
+                print(f"📻 Webhook received: {title}" + (f" by {artist}" if artist else ""))
+                
+                # Only send courtroom message if radio is active
+                if self.radio_active and self.connected:
+                    # Revert to bot username for radio announcements
+                    original_username = self.config.get('objection', 'bot_username')
+                    await self.change_username_and_wait(original_username)
+                    self._last_queued_username = None  # Reset so next Discord message changes username
+                    
+                    # Format announcement
+                    if artist:
+                        announcement = f"Ruff Ruff 🎵 Now Playing: {title} by {artist}"
+                    else:
+                        announcement = f"Ruff Ruff 🎵 Now Playing: {title}"
+                    
+                    await self.send_message(announcement)
+                    print(f"📻 Sent radio announcement to courtroom: {announcement}")
+                else:
+                    if not self.radio_active:
+                        print(f"📻 Radio inactive, skipping courtroom announcement")
+                    elif not self.connected:
+                        print(f"📻 Not connected, skipping courtroom announcement")
+                
+                return web.Response(text="OK", status=200)
+            except Exception as e:
+                print(f"📻 Webhook error: {e}")
+                return web.Response(text="Error", status=500)
+        
+        app = web.Application()
+        app.router.add_post('/webhook/now-playing', handle_now_playing)
+        
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, '0.0.0.0', webhook_port)
+        await site.start()
+        print(f"📻 Webhook server listening on port {webhook_port}")
+        self._webhook_runner = runner
+    
     async def graceful_disconnect(self):
         """Gracefully disconnect: clean up Discord, update room, disconnect socket."""
         print("🔄 Starting graceful disconnect...")
+        
+        # Clean up webhook server
+        if hasattr(self, '_webhook_runner') and self._webhook_runner:
+            print("🛑 Stopping webhook server...")
+            await self._webhook_runner.cleanup()
+            print("✅ Webhook server stopped")
         
         # Stop the queue processor first
         if self._queue_processor_task and not self._queue_processor_task.done():
