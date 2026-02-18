@@ -4361,7 +4361,7 @@ class ObjectionBot:
 
     async def handle_radio_command(self, user_id, text):
         """Handle !radio command - start playing the radio in the courtroom.
-        Picks a random BGM ID from the pool, fires PATCH in background, and sends the BGM command."""
+        Picks a random BGM ID from the pool, PATCHes its URL, and sends the BGM command."""
         username = self.user_names.get(user_id, f"User-{user_id[:8]}")
         
         print(f"[RADIO] {username} requested radio")
@@ -4369,33 +4369,46 @@ class ObjectionBot:
         # Set radio state to active
         self.radio_active = True
         
-        # Pick a random BGM ID immediately (no await — PATCH fires in background)
-        chosen_bgm_id = random.choice(self.radio_bgm_ids) if self.radio_bgm_ids else '392556'
-        bgm_tag = f"#bgm{chosen_bgm_id}"
+        # Pick a random BGM from the pool and PATCH its URL
+        chosen_bgm_id = await self.pick_and_patch_radio_bgm()
+        if not chosen_bgm_id:
+            # Fallback: use first ID without patching
+            chosen_bgm_id = self.radio_bgm_ids[0] if self.radio_bgm_ids else '392556'
         
-        # Fire the PATCH in the background — it just needs to complete before
-        # the objection.lol player fetches the URL (which happens after message renders)
-        asyncio.create_task(self._patch_bgm_background(chosen_bgm_id))
+        bgm_tag = f"#bgm{chosen_bgm_id}"
         
         # Try to get current track info from stored state first, then fallback to API
         title = self.radio_last_title
         artist = self.radio_last_artist
         
-        # Run API fetch (if needed) and username change concurrently
-        original_username = self.config.get('objection', 'bot_username')
-        
         if not title:
-            # Fetch from radio API and change username concurrently
-            api_task = asyncio.create_task(self._fetch_radio_track_info())
-            username_task = asyncio.create_task(self.change_username_and_wait(original_username))
-            track_info = await api_task
-            title = track_info[0]
-            artist = track_info[1]
-            await username_task
-        else:
-            # Just change username
-            await self.change_username_and_wait(original_username)
+            # Fetch from radio API as fallback
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(self.radio_api_url, timeout=aiohttp.ClientTimeout(total=5)) as response:
+                        if response.status == 200:
+                            data = await response.json()
+                            track = data.get('track')
+                            if track and data.get('is_streaming'):
+                                title = track.get('title', 'Unknown')
+                                artist = track.get('artist', '')
+                                print(f"[RADIO] Fetched current track from API: {title}" + (f" by {artist}" if artist else ""))
+                            else:
+                                title = 'Unknown'
+                                artist = ''
+                                print(f"[RADIO] No track currently streaming")
+                        else:
+                            title = 'Unknown'
+                            artist = ''
+                            print(f"[RADIO] API returned status {response.status}, using defaults")
+            except Exception as e:
+                title = 'Unknown'
+                artist = ''
+                print(f"[RADIO] Failed to fetch from API: {e}")
         
+        # Change to bot's default username for command responses
+        original_username = self.config.get('objection', 'bot_username')
+        await self.change_username_and_wait(original_username)
         self._last_queued_username = None  # Reset so next Discord message changes username
         
         # Send combined BGM + announcement as a single normal message (BGM tag must be in a normal message to work)
@@ -4406,66 +4419,6 @@ class ObjectionBot:
         
         await self.send_message(radio_announcement)
         print(f"[RADIO] Sent radio announcement with BGM: {radio_announcement}")
-    
-    async def _patch_bgm_background(self, chosen_id):
-        """Fire-and-forget PATCH for a BGM entry's URL."""
-        try:
-            if not await self.ensure_objection_token():
-                print(f"[RADIO] Background PATCH skipped (no token) for BGM #{chosen_id}")
-                return
-            uid = f"{int(time.time())}-{random.randint(100000, 999999)}"
-            new_url = f"{self.radio_stream_base_url}/{uid}.mp3"
-            async with aiohttp.ClientSession() as session:
-                async with session.patch(
-                    f"https://objection.lol/api/assets/music/{chosen_id}",
-                    json={
-                        "id": int(chosen_id),
-                        "name": "CourtDog FM",
-                        "url": new_url,
-                        "volume": 75
-                    },
-                    headers={
-                        "Authorization": self.objection_api_token,
-                        "Content-Type": "application/json",
-                        "Origin": "https://objection.lol",
-                        "Referer": "https://objection.lol/",
-                    },
-                    timeout=aiohttp.ClientTimeout(total=10)
-                ) as response:
-                    if response.status == 200:
-                        print(f"[RADIO] Background PATCH OK: BGM #{chosen_id} → {new_url}")
-                    elif response.status == 401:
-                        self.objection_api_token = None
-                        self.objection_token_expires = 0
-                        print(f"[RADIO] Background PATCH 401 for BGM #{chosen_id}, token cleared")
-                    else:
-                        body = await response.text()
-                        print(f"[RADIO] Background PATCH failed for BGM #{chosen_id} (status {response.status}): {body}")
-        except Exception as e:
-            print(f"[RADIO] Background PATCH error for BGM #{chosen_id}: {e}")
-    
-    async def _fetch_radio_track_info(self):
-        """Fetch current track info from the radio API. Returns (title, artist) tuple."""
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(self.radio_api_url, timeout=aiohttp.ClientTimeout(total=5)) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        track = data.get('track')
-                        if track and data.get('is_streaming'):
-                            title = track.get('title', 'Unknown')
-                            artist = track.get('artist', '')
-                            print(f"[RADIO] Fetched current track from API: {title}" + (f" by {artist}" if artist else ""))
-                            return (title, artist)
-                        else:
-                            print(f"[RADIO] No track currently streaming")
-                            return ('Unknown', '')
-                    else:
-                        print(f"[RADIO] API returned status {response.status}, using defaults")
-                        return ('Unknown', '')
-        except Exception as e:
-            print(f"[RADIO] Failed to fetch from API: {e}")
-            return ('Unknown', '')
     
     async def start_webhook_server(self):
         """Start HTTP webhook server for radio song change notifications"""
