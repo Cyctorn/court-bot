@@ -21,5 +21,10 @@ services:
       - SHOW_JOIN_LEAVE=${SHOW_JOIN_LEAVE:-}
       - VERBOSE=${VERBOSE:-}
       - ENABLE_PINGS=${ENABLE_PINGS:-}
+      - RADIO_BGM_ID=${RADIO_BGM_ID:-}
+      - RADIO_API_URL=${RADIO_API_URL:-}
+      - WEBHOOK_PORT=${WEBHOOK_PORT:-5050}
+    ports:
+      - "5050:5050"
     stdin_open: true
     tty: true

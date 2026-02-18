@@ -13,6 +13,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 # Create volume for persistent data
 VOLUME ["/app/data"]
+EXPOSE 5050
 # Run the bot
 CMD ["python", "courtbot.py"]
 ### `requirements.txt`
