@@ -252,6 +252,10 @@ class Config:
             announce_str = os.getenv('RADIO_ANNOUNCE_TRACKS').lower()
             self.data['settings']['radio_announce_tracks'] = announce_str in ('true', '1', 'yes', 'on')
             print(f"🌍 Radio announce tracks loaded from environment variable: {self.data['settings']['radio_announce_tracks']}")
+        if os.getenv('RADIO_NOW_PLAYING_REMINDER'):
+            reminder_str = os.getenv('RADIO_NOW_PLAYING_REMINDER').lower()
+            self.data['settings']['radio_now_playing_reminder'] = reminder_str in ('true', '1', 'yes', 'on')
+            print(f"🌍 Radio now playing reminder loaded from environment variable: {self.data['settings']['radio_now_playing_reminder']}")
         
         print("🌍 Environment variable overrides applied")
     def create_default_config(self):
@@ -272,7 +276,8 @@ class Config:
                 "verbose": False,
                 "enable_pings": False,
                 "courtroom_greeting": True,
-                "radio_announce_tracks": True
+                "radio_announce_tracks": True,
+                "radio_now_playing_reminder": True
             }
         }
         
@@ -2446,6 +2451,8 @@ class ObjectionBot:
         self.radio_active = False  # Whether radio is currently playing in courtroom
         self.radio_last_title = None  # Last known track title from webhook
         self.radio_last_artist = None  # Last known track artist from webhook
+        self.radio_song_counter = 0   # Songs since last !radio or !playing, reminder every 5
+        self.radio_last_bot_message = None  # Track last message type sent by bot ('now_playing', 'announce', etc.)
         self._radio_bgm_pattern = re.compile(r'\[#bgm(\d+)\]')  # Pattern to detect BGM commands in messages
         if self.radio_bgm_ids:
             print(f"📻 Radio BGM pool: {len(self.radio_bgm_ids)} entries (IDs {self.radio_bgm_ids[0]}..{self.radio_bgm_ids[-1]})")
@@ -2769,6 +2776,10 @@ class ObjectionBot:
         message = data.get('message', {})
         text = message.get('text', '')
 
+        # Clear last bot message tracker when someone else sends a message
+        if user_id != self.user_id:
+            self.radio_last_bot_message = None
+
         # Check for pairing request message
         if "Please pair with me CourtDog-sama" in text and self._pending_pair_request and user_id != self.user_id:
             log_verbose(f"[PAIRING] Auto-accepting pairing due to message: {text}")
@@ -2891,6 +2902,10 @@ class ObjectionBot:
         if '!radio' in text_lower and '📻' not in text:
             await self.handle_radio_command(user_id, text)
 
+        # !playing command - show current track info
+        if '!playing' in text_lower and '🎵' not in text:
+            await self.handle_playing_command(user_id)
+
         if user_id != self.user_id:
             # Check ignore patterns 
             ignore_patterns = self.config.get('settings', 'ignore_patterns')
@@ -2932,6 +2947,10 @@ class ObjectionBot:
         """Handle plain messages (without avatar/character info)"""
         user_id = data.get('userId')
         text = data.get('text', '')
+        
+        # Clear last bot message tracker when someone else sends a message
+        if user_id != self.user_id:
+            self.radio_last_bot_message = None
         
         # --- Radio BGM state tracking (same as handle_message) ---
         text_lower = text.lower()
@@ -2996,6 +3015,10 @@ class ObjectionBot:
         # !radio command - skip if message contains 📻 (prevents feedback loop)
         if '!radio' in text_lower and '📻' not in text:
             await self.handle_radio_command(user_id, text)
+
+        # !playing command - show current track info
+        if '!playing' in text_lower and '🎵' not in text:
+            await self.handle_playing_command(user_id)
 
         if user_id != self.user_id:
             # Check ignore patterns
@@ -4390,6 +4413,9 @@ class ObjectionBot:
         
         print(f"[RADIO] {username} requested radio")
         
+        # Reset song counter (user just interacted with radio)
+        self.radio_song_counter = 0
+        
         # Set radio state to active
         self.radio_active = True
         
@@ -4442,7 +4468,59 @@ class ObjectionBot:
             radio_announcement = f"[#ts1]📻 Ruff 🎵 (This is CourtDog FM, you're listening to: {title}) [{bgm_tag}]"
         
         await self.send_message(radio_announcement)
+        self.radio_last_bot_message = 'now_playing'
         print(f"[RADIO] Sent radio announcement with BGM: {radio_announcement}")
+
+    async def handle_playing_command(self, user_id):
+        """Handle !playing command - show what's currently playing on the radio."""
+        username = self.user_names.get(user_id, f"User-{user_id[:8]}")
+        print(f"[RADIO] {username} requested current track info")
+
+        # Reset song counter (user just interacted with radio)
+        self.radio_song_counter = 0
+
+        # Try stored state first, then fall back to API
+        title = self.radio_last_title
+        artist = self.radio_last_artist
+
+        if not title:
+            # Fetch from radio API
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(self.radio_api_url, timeout=aiohttp.ClientTimeout(total=5)) as response:
+                        if response.status == 200:
+                            data = await response.json()
+                            track = data.get('track')
+                            if track and data.get('is_streaming'):
+                                title = track.get('title', '')
+                                artist = track.get('artist', '')
+                            else:
+                                title = ''
+                                artist = ''
+                        else:
+                            title = ''
+                            artist = ''
+            except Exception as e:
+                title = ''
+                artist = ''
+                print(f"[RADIO] Failed to fetch from API: {e}")
+
+        # Switch to bot username for the response
+        original_username = self.config.get('objection', 'bot_username')
+        await self.change_username_and_wait(original_username)
+        self._last_queued_username = None
+
+        if title:
+            if artist:
+                msg = f"🎵Ruff (Now playing: {title} by {artist})"
+            else:
+                msg = f"🎵Ruff (Now playing: {title})"
+        else:
+            msg = "🎵Ruff (Nothing is playing right now)"
+
+        await self.send_plain_message(msg)
+        self.radio_last_bot_message = 'now_playing'
+        print(f"[RADIO] Sent !playing response: {msg}")
     
     async def start_webhook_server(self):
         """Start HTTP webhook server for radio song change notifications"""
@@ -4465,30 +4543,56 @@ class ObjectionBot:
                 if announce_tracks is None:
                     announce_tracks = True  # default to enabled
                 
-                if self.radio_active and self.connected and announce_tracks:
+                now_playing_reminder = self.config.get('settings', 'radio_now_playing_reminder')
+                if now_playing_reminder is None:
+                    now_playing_reminder = True  # default to enabled
+                
+                if self.radio_active and self.connected:
                     # Pre-patch a random BGM URL for the next !radio call
                     await self.pick_and_patch_radio_bgm()
                     
-                    # Revert to bot username for radio announcements
-                    original_username = self.config.get('objection', 'bot_username')
-                    await self.change_username_and_wait(original_username)
-                    self._last_queued_username = None  # Reset so next Discord message changes username
+                    # Increment song counter
+                    self.radio_song_counter += 1
                     
-                    # Format announcement
-                    if artist:
-                        announcement = f"Ruff 🎵 (Next up: {title} by {artist})"
+                    # Every 5 songs, send a "currently playing" reminder (if enabled)
+                    # (includes 📻 and 🎵 to prevent triggering !radio and !playing detection)
+                    if now_playing_reminder and self.radio_song_counter >= 5:
+                        # If the last bot message was already a now-playing type, skip to avoid spam
+                        if self.radio_last_bot_message == 'now_playing':
+                            self.radio_song_counter = 0
+                            print(f"📻 Last message was already now-playing, skipping reminder (reset counter)")
+                        else:
+                            self.radio_song_counter = 0
+                            
+                            original_username = self.config.get('objection', 'bot_username')
+                            await self.change_username_and_wait(original_username)
+                            self._last_queued_username = None
+                            
+                            reminder = f"📻🎵 Ruff (Playing: {title}. Refresh stream: !radio. Current track: !playing)"
+                            await self.send_plain_message(reminder)
+                            self.radio_last_bot_message = 'now_playing'
+                            print(f"📻 Sent periodic reminder: {reminder}")
+                    elif announce_tracks:
+                        # Normal "Next up" announcement
+                        original_username = self.config.get('objection', 'bot_username')
+                        await self.change_username_and_wait(original_username)
+                        self._last_queued_username = None
+                        
+                        if artist:
+                            announcement = f"Ruff 🎵 (Next up: {title} by {artist})"
+                        else:
+                            announcement = f"Ruff 🎵 (Next up: {title})"
+                        
+                        await self.send_plain_message(announcement)
+                        self.radio_last_bot_message = 'announce'
+                        print(f"📻 Sent radio announcement to courtroom (plain): {announcement}")
                     else:
-                        announcement = f"Ruff 🎵 (Next up: {title})"
-                    
-                    await self.send_plain_message(announcement)
-                    print(f"📻 Sent radio announcement to courtroom (plain): {announcement}")
+                        print(f"📻 Track announcements disabled, skipping (counter: {self.radio_song_counter})")
                 else:
                     if not self.radio_active:
                         print(f"📻 Radio inactive, skipping courtroom announcement")
                     elif not self.connected:
                         print(f"📻 Not connected, skipping courtroom announcement")
-                    elif not announce_tracks:
-                        print(f"📻 Track announcements disabled (RADIO_ANNOUNCE_TRACKS=false), skipping")
                 
                 return web.Response(text="OK", status=200)
             except Exception as e:
