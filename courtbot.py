@@ -4463,9 +4463,9 @@ class ObjectionBot:
         
         # Send combined BGM + announcement as a single normal message (BGM tag must be in a normal message to work)
         if artist:
-            radio_announcement = f"[#ts1]📻 Ruff 🎵 (This is CourtDog FM, you're listening to: {title} by {artist}) [{bgm_tag}]"
+            radio_announcement = f"[#ts1]📻 Ruff 🎵 (This is CourtDog FM, you're listening to: {title} by {artist}. For current track info, use !playing) [{bgm_tag}]"
         else:
-            radio_announcement = f"[#ts1]📻 Ruff 🎵 (This is CourtDog FM, you're listening to: {title}) [{bgm_tag}]"
+            radio_announcement = f"[#ts1]📻 Ruff 🎵 (This is CourtDog FM, you're listening to: {title}. For current track info, use !playing) [{bgm_tag}]"
         
         await self.send_message(radio_announcement)
         self.radio_last_bot_message = 'now_playing'
