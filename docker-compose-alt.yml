@@ -4,7 +4,7 @@ services:
     build: .
     restart: unless-stopped
     volumes:
-      - /DATA/AppData/courtdog:/data
+      - /DATA/AppData/courtdog:/app/data
       # Only mount config.json if it exists, otherwise let the app create a default one
     environment:
       - PYTHONUNBUFFERED=1
