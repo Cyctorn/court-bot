@@ -350,7 +350,7 @@ class DiscordCourtBot(discord.Client):
         self._sfx_pattern = re.compile(r'\[#bgs(\d+)\]')
         self._evidence_pattern = re.compile(r'\[#evdi?(\d+)\]')
         self._color_code_pattern = re.compile(r'\[#/[a-zA-Z]\]|\[#/c[a-fA-F0-9]{6}\]|\[/#\]|\[#ts\d+\]')
-        self._discord_cdn_pattern = re.compile(r'https?://(?:media\.discordapp\.net|cdn\.discordapp\.com)/attachments/\S+')
+        self._discord_cdn_pattern = re.compile(r'https?://(?:media\.discordapp\.net|cdn\.discordapp\.com|cdn\.discord\.com)/attachments/\S+')
     
     async def fetch_music_url(self, bgm_id, validate_url=False):
         """Fetch the actual external URL for a BGM ID from objection.lol's API
