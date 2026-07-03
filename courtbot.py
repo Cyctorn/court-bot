@@ -715,24 +715,30 @@ class DiscordCourtBot(discord.Client):
                 media_urls.append(attachment.url)
                 log_verbose(f"🎥 Found video attachment: {attachment.filename} - {attachment.url}")
         
-        # Extract from embeds (auto-generated previews from URLs)
+        # Extract from embeds (auto-generated previews from pasted Discord upload URLs ONLY)
+        # We only want Discord attachment URLs (/attachments/...), NOT external proxy URLs
+        # like images-ext-1.discordapp.net/external/... from third-party links (Tenor, Klipy, etc.)
+        def _is_discord_attachment_url(url):
+            base = url.split('?')[0]
+            return '/attachments/' in base and ('discordapp.net' in base or 'discordapp.com' in base or 'discord.com' in base)
+        
         for embed in message.embeds:
-            # Image embeds (e.g. from pasted image URLs)
-            if embed.image and embed.image.url:
+            # Image embeds (e.g. from pasted Discord upload URLs)
+            if embed.image and embed.image.url and _is_discord_attachment_url(embed.image.url):
                 url = embed.image.proxy_url or embed.image.url
                 if url not in media_urls:
                     media_urls.append(url)
                     log_verbose(f"🖼️ Found image from embed: {url}")
             
             # Thumbnail embeds (Discord often puts image previews here)
-            if embed.thumbnail and embed.thumbnail.url:
+            if embed.thumbnail and embed.thumbnail.url and _is_discord_attachment_url(embed.thumbnail.url):
                 url = embed.thumbnail.proxy_url or embed.thumbnail.url
                 if url not in media_urls:
                     media_urls.append(url)
                     log_verbose(f"🖼️ Found thumbnail from embed: {url}")
             
             # Video embeds
-            if embed.video and embed.video.url:
+            if embed.video and embed.video.url and _is_discord_attachment_url(embed.video.url):
                 url = embed.video.proxy_url or embed.video.url
                 if url not in media_urls:
                     media_urls.append(url)
