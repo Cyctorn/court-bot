@@ -761,7 +761,8 @@ class DiscordCourtBot(discord.Client):
             
             for url in embed_urls:
                 base_url = url.split('?')[0]
-                if 'discordapp.net' in base_url or 'discordapp.com' in base_url:
+                if ('/attachments/' in base_url and
+                        ('discordapp.net' in base_url or 'discordapp.com' in base_url or 'discord.com' in base_url)):
                     # Only store if the URL actually has auth params
                     if '?' in url and base_url not in url_map:
                         url_map[base_url] = url
