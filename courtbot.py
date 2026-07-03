@@ -351,6 +351,7 @@ class DiscordCourtBot(discord.Client):
         self._evidence_pattern = re.compile(r'\[#evdi?(\d+)\]')
         self._color_code_pattern = re.compile(r'\[#/[a-zA-Z]\]|\[#/c[a-fA-F0-9]{6}\]|\[/#\]|\[#ts\d+\]')
         self._discord_cdn_pattern = re.compile(r'https?://(?:media\.discordapp\.net|cdn\.discordapp\.com|cdn\.discord\.com)/attachments/\S+')
+        self._discord_domain_pattern = re.compile(r'^https?://[^/]*discord(?:app)?\.(?:com|net)(?:/|$)', re.IGNORECASE)
     
     async def fetch_music_url(self, bgm_id, validate_url=False):
         """Fetch the actual external URL for a BGM ID from objection.lol's API
@@ -697,6 +698,10 @@ class DiscordCourtBot(discord.Client):
         log_verbose(f"🎨 Color strip: '{text}' → '{cleaned}'")  # Debug line
         return cleaned
 
+    def _is_discord_url(self, url):
+        """Check if a URL points to a Discord domain (discord.com/discordapp.com/discordapp.net)"""
+        return bool(url) and bool(self._discord_domain_pattern.match(url))
+
     def extract_media_urls(self, message):
         """Extract image and video URLs from Discord message attachments and embeds"""
         media_urls = []
@@ -717,6 +722,16 @@ class DiscordCourtBot(discord.Client):
         
         # Extract from embeds (auto-generated previews from URLs)
         for embed in message.embeds:
+            # If the embed represents a link the user pasted (embed.url) and that link
+            # is NOT a Discord URL, then it's just an auto-generated preview of an
+            # external site (e.g. klipy.com, tenor.com, giphy.com). Discord's preview
+            # image/video URLs are proxied through images-ext-*.discordapp.net, which
+            # would duplicate/replace the original link if we extracted them here.
+            # In that case, leave the original bare URL untouched and skip extraction.
+            if embed.url and not self._is_discord_url(embed.url):
+                log_verbose(f"⏭️ Skipping embed media extraction for non-Discord link: {embed.url}")
+                continue
+            
             # Image embeds (e.g. from pasted image URLs)
             if embed.image and embed.image.url:
                 url = embed.image.proxy_url or embed.image.url
@@ -750,6 +765,12 @@ class DiscordCourtBot(discord.Client):
         url_map = {}  # base_url (no query params) -> authenticated_url (with query params)
         
         for embed in message.embeds:
+            # Skip embeds generated from a non-Discord link (e.g. an external site
+            # whose auto-embed happens to be proxied through discordapp.net) - the
+            # base URL the user posted wasn't a Discord link, so leave it as-is.
+            if embed.url and not self._is_discord_url(embed.url):
+                continue
+            
             # Check all possible image/video URL sources in the embed
             embed_urls = []
             if embed.image and embed.image.url:
