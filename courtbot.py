@@ -350,6 +350,7 @@ class DiscordCourtBot(discord.Client):
         self._sfx_pattern = re.compile(r'\[#bgs(\d+)\]')
         self._evidence_pattern = re.compile(r'\[#evdi?(\d+)\]')
         self._color_code_pattern = re.compile(r'\[#/[a-zA-Z]\]|\[#/c[a-fA-F0-9]{6}\]|\[/#\]|\[#ts\d+\]')
+        self._discord_cdn_pattern = re.compile(r'https?://(?:media\.discordapp\.net|cdn\.discordapp\.com)/attachments/\S+')
     
     async def fetch_music_url(self, bgm_id, validate_url=False):
         """Fetch the actual external URL for a BGM ID from objection.lol's API
@@ -697,7 +698,7 @@ class DiscordCourtBot(discord.Client):
         return cleaned
 
     def extract_media_urls(self, message):
-        """Extract image and video URLs from Discord message attachments"""
+        """Extract image and video URLs from Discord message attachments and embeds"""
         media_urls = []
         
         # Extract from attachments (direct file uploads)
@@ -714,7 +715,59 @@ class DiscordCourtBot(discord.Client):
                 media_urls.append(attachment.url)
                 log_verbose(f"🎥 Found video attachment: {attachment.filename} - {attachment.url}")
         
+        # Extract from embeds (auto-generated previews from URLs)
+        for embed in message.embeds:
+            # Image embeds (e.g. from pasted image URLs)
+            if embed.image and embed.image.url:
+                url = embed.image.proxy_url or embed.image.url
+                if url not in media_urls:
+                    media_urls.append(url)
+                    log_verbose(f"🖼️ Found image from embed: {url}")
+            
+            # Thumbnail embeds (Discord often puts image previews here)
+            if embed.thumbnail and embed.thumbnail.url:
+                url = embed.thumbnail.proxy_url or embed.thumbnail.url
+                if url not in media_urls:
+                    media_urls.append(url)
+                    log_verbose(f"🖼️ Found thumbnail from embed: {url}")
+            
+            # Video embeds
+            if embed.video and embed.video.url:
+                url = embed.video.proxy_url or embed.video.url
+                if url not in media_urls:
+                    media_urls.append(url)
+                    log_verbose(f"🎥 Found video from embed: {url}")
+        
         return media_urls
+
+    def _get_authenticated_discord_urls(self, message):
+        """Build a mapping of bare Discord CDN URLs to their authenticated versions from embeds.
+        
+        Discord CDN URLs require authentication query parameters (?ex=...&is=...&hm=...)
+        to be accessed externally. When Discord auto-embeds a CDN link, the embed contains
+        the authenticated URL. This method extracts that mapping.
+        """
+        url_map = {}  # base_url (no query params) -> authenticated_url (with query params)
+        
+        for embed in message.embeds:
+            # Check all possible image/video URL sources in the embed
+            embed_urls = []
+            if embed.image and embed.image.url:
+                embed_urls.append(embed.image.url)
+            if embed.thumbnail and embed.thumbnail.url:
+                embed_urls.append(embed.thumbnail.url)
+            if embed.video and embed.video.url:
+                embed_urls.append(embed.video.url)
+            
+            for url in embed_urls:
+                base_url = url.split('?')[0]
+                if 'discordapp.net' in base_url or 'discordapp.com' in base_url:
+                    # Only store if the URL actually has auth params
+                    if '?' in url and base_url not in url_map:
+                        url_map[base_url] = url
+                        log_verbose(f"🔑 Found authenticated Discord CDN URL: {base_url} -> {url[:80]}...")
+        
+        return url_map
     async def setup_hook(self):
         """Called when the bot is starting up"""
         # Sync slash commands ONLY to the specific guild (not globally)
@@ -1687,18 +1740,48 @@ class DiscordCourtBot(discord.Client):
             # They get relayed to courtroom where the bot processes them and sends embeds back
             # This prevents duplicate responses
             
+            # Check if message contains bare Discord CDN URLs that need authentication
+            # Discord CDN URLs require ?ex=...&is=...&hm=... params to load externally
+            has_discord_cdn_url = self._discord_cdn_pattern.search(message.content)
+            
+            # If we found Discord CDN URLs but no embeds yet, wait briefly for Discord
+            # to generate the embed (which contains the authenticated URL)
+            if has_discord_cdn_url and not message.embeds:
+                await asyncio.sleep(1.5)
+                try:
+                    message = await message.channel.fetch_message(message.id)
+                    log_verbose(f"🔄 Re-fetched message for Discord CDN embed (got {len(message.embeds)} embeds)")
+                except Exception as e:
+                    log_verbose(f"⚠️ Failed to re-fetch message for embeds: {e}")
+            
             # Extract image and video URLs from attachments and embeds
             media_urls = self.extract_media_urls(message)
             
+            # Replace bare Discord CDN URLs in content with authenticated versions
+            message_content = message.content
+            if has_discord_cdn_url and message.embeds:
+                auth_url_map = self._get_authenticated_discord_urls(message)
+                if auth_url_map:
+                    for bare_url_match in self._discord_cdn_pattern.finditer(message_content):
+                        bare_url = bare_url_match.group(0)
+                        # Strip any trailing query params from the content URL to match
+                        base_url = bare_url.split('?')[0]
+                        if base_url in auth_url_map:
+                            message_content = message_content.replace(bare_url, auth_url_map[base_url])
+                            log_verbose(f"🔑 Replaced bare Discord CDN URL with authenticated version")
+            
             # Prepare message content with media
             content_parts = []
-            if message.content.strip():
-                content_parts.append(message.content)
+            if message_content.strip():
+                content_parts.append(message_content)
             
-            # Add media URLs to the message
+            # Add media URLs to the message (only if not already in the content)
             if media_urls:
                 for url in media_urls:
-                    content_parts.append(url)
+                    # Avoid duplicating URLs that are already in the message content
+                    url_base = url.split('?')[0]
+                    if url_base not in message_content:
+                        content_parts.append(url)
             
             # If no text content and no media, skip the message
             if not content_parts:
