@@ -1779,8 +1779,14 @@ class DiscordCourtBot(discord.Client):
             if media_urls:
                 for url in media_urls:
                     # Avoid duplicating URLs that are already in the message content
+                    # Compare by path portion since cdn.discordapp.com and media.discordapp.net
+                    # are different domains that serve the same attachment files
                     url_base = url.split('?')[0]
-                    if url_base not in message_content:
+                    try:
+                        url_path = '/' + url_base.split('/', 3)[3]  # Extract path after domain
+                    except IndexError:
+                        url_path = url_base
+                    if url_path not in message_content and url_base not in message_content:
                         content_parts.append(url)
             
             # If no text content and no media, skip the message
