@@ -715,27 +715,32 @@ class DiscordCourtBot(discord.Client):
                 media_urls.append(attachment.url)
                 log_verbose(f"🎥 Found video attachment: {attachment.filename} - {attachment.url}")
         
-        # Extract from embeds (auto-generated previews from URLs)
-        allowed_domains = ('media.discordapp.net', 'cdn.discordapp.com', 'cdn.discord.com')
+        # Extract from embeds (auto-generated previews from pasted Discord upload URLs ONLY)
+        # We only want Discord attachment URLs (/attachments/...), NOT external proxy URLs
+        # like images-ext-1.discordapp.net/external/... from third-party links (Tenor, Klipy, etc.)
+        def _is_discord_attachment_url(url):
+            base = url.split('?')[0]
+            return '/attachments/' in base and ('discordapp.net' in base or 'discordapp.com' in base or 'discord.com' in base)
+        
         for embed in message.embeds:
-            # Image embeds (e.g. from pasted image URLs)
-            if embed.image and embed.image.url:
+            # Image embeds (e.g. from pasted Discord upload URLs)
+            if embed.image and embed.image.url and _is_discord_attachment_url(embed.image.url):
                 url = embed.image.proxy_url or embed.image.url
-                if any(domain in url for domain in allowed_domains) and url not in media_urls:
+                if url not in media_urls:
                     media_urls.append(url)
                     log_verbose(f"🖼️ Found image from embed: {url}")
             
             # Thumbnail embeds (Discord often puts image previews here)
-            if embed.thumbnail and embed.thumbnail.url:
+            if embed.thumbnail and embed.thumbnail.url and _is_discord_attachment_url(embed.thumbnail.url):
                 url = embed.thumbnail.proxy_url or embed.thumbnail.url
-                if any(domain in url for domain in allowed_domains) and url not in media_urls:
+                if url not in media_urls:
                     media_urls.append(url)
                     log_verbose(f"🖼️ Found thumbnail from embed: {url}")
             
             # Video embeds
-            if embed.video and embed.video.url:
+            if embed.video and embed.video.url and _is_discord_attachment_url(embed.video.url):
                 url = embed.video.proxy_url or embed.video.url
-                if any(domain in url for domain in allowed_domains) and url not in media_urls:
+                if url not in media_urls:
                     media_urls.append(url)
                     log_verbose(f"🎥 Found video from embed: {url}")
         
@@ -749,7 +754,6 @@ class DiscordCourtBot(discord.Client):
         the authenticated URL. This method extracts that mapping.
         """
         url_map = {}  # base_url (no query params) -> authenticated_url (with query params)
-        allowed_domains = ('media.discordapp.net', 'cdn.discordapp.com', 'cdn.discord.com')
         
         for embed in message.embeds:
             # Check all possible image/video URL sources in the embed
@@ -763,7 +767,8 @@ class DiscordCourtBot(discord.Client):
             
             for url in embed_urls:
                 base_url = url.split('?')[0]
-                if any(domain in base_url for domain in allowed_domains):
+                if ('/attachments/' in base_url and
+                        ('discordapp.net' in base_url or 'discordapp.com' in base_url or 'discord.com' in base_url)):
                     # Only store if the URL actually has auth params
                     if '?' in url and base_url not in url_map:
                         url_map[base_url] = url
