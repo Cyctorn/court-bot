@@ -25,6 +25,8 @@ COLOR_FILE = '/app/data/colors.json'
 CHARACTER_FILE = '/app/data/characters.json'
 # Autoban patterns storage file
 AUTOBAN_FILE = '/app/data/autobans.json'
+# Character ID autoban storage file
+CHARBAN_FILE = '/app/data/charbans.json'
 # Ping nickname storage file (for courtroom users to ping Discord users)
 PING_NICKNAME_FILE = '/app/data/ping_nicknames.json'
 
@@ -132,6 +134,27 @@ def save_autobans(autobans):
             json.dump(autobans, f, indent=2)
     except Exception as e:
         print(f"❌ Error saving autobans: {e}")
+
+def load_charbans():
+    """Load banned character IDs from file"""
+    if os.path.exists(CHARBAN_FILE):
+        try:
+            with open(CHARBAN_FILE, 'r') as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"❌ Error loading charbans: {e}")
+            return []
+    return []
+
+def save_charbans(charbans):
+    """Save banned character IDs to file"""
+    try:
+        # Ensure the directory exists
+        os.makedirs(os.path.dirname(CHARBAN_FILE), exist_ok=True)
+        with open(CHARBAN_FILE, 'w') as f:
+            json.dump(charbans, f, indent=2)
+    except Exception as e:
+        print(f"❌ Error saving charbans: {e}")
 
 def load_ping_nicknames():
     """Load ping nicknames from file. Format: {discord_user_id: [nick1, nick2, ...]}"""
@@ -2511,6 +2534,9 @@ class ObjectionBot:
         # Autoban patterns (regex patterns for automatic banning)
         self.autoban_patterns = load_autobans()
         
+        # Character ID autobans (banned character IDs for automatic banning)
+        self.charban_ids = load_charbans()
+        
         # For Discord bridge compatibility and message queueing
         self._username_change_event = asyncio.Event()
         self._pending_username = None
@@ -2846,6 +2872,30 @@ class ObjectionBot:
         user_id = data.get('userId')
         message = data.get('message', {})
         text = message.get('text', '')
+
+        # Check character ID autoban (separate from username autoban)
+        if user_id and user_id != self.user_id:
+            matched_char_id = self.check_charban(message.get('characterId'))
+            if matched_char_id is not None:
+                username = self.user_names.get(user_id, f"User-{user_id[:8]}")
+                if self.is_admin:
+                    print(f"🚫 CHARBAN: User '{username}' used banned character ID {matched_char_id} - banning immediately...")
+                    
+                    # Send "Ruff (Banned undesirable)" message to courtroom
+                    original_username = self.config.get('objection', 'bot_username')
+                    await self.change_username_and_wait(original_username)
+                    await self.send_message("Ruff (Banned undesirable)")
+                    
+                    # Execute the ban
+                    await self.create_ban(user_id)
+                    
+                    # Remove from user mapping since they're banned
+                    if user_id in self.user_names:
+                        del self.user_names[user_id]
+                    
+                    return  # Don't process/relay the message from banned users
+                else:
+                    print(f"⚠️ CHARBAN: User '{username}' used banned character ID {matched_char_id} but bot is not admin - cannot ban")
 
         # Check for pairing request message
         if "Please pair with me CourtDog-sama" in text and self._pending_pair_request and user_id != self.user_id:
@@ -3474,6 +3524,18 @@ class ObjectionBot:
                 # If regex is invalid, try exact match (case-insensitive)
                 if pattern.lower() == username.lower():
                     return pattern
+        return None
+    
+    def check_charban(self, character_id):
+        """Check if a character ID is in the charban list"""
+        if character_id is None:
+            return None
+        for banned_id in self.charban_ids:
+            try:
+                if int(banned_id) == int(character_id):
+                    return banned_id
+            except (ValueError, TypeError):
+                continue
         return None
     
     async def update_moderators(self):
@@ -4927,6 +4989,88 @@ async def terminal_command_listener(objection_bot, discord_bot):
                     if not objection_bot.is_admin:
                         print("\n⚠️ Note: Bot must be admin to execute bans")
             
+            elif cmd_lower.startswith("charban "):
+                # Character ID autoban management commands
+                charban_cmd = cmd[8:].strip()  # Remove "charban " prefix
+                charban_parts = charban_cmd.split(" ", 1)
+                charban_action = charban_parts[0].lower() if charban_parts else ""
+                charban_arg = charban_parts[1].strip() if len(charban_parts) > 1 else ""
+                
+                if charban_action == "add" and charban_arg:
+                    # Add a new banned character ID
+                    try:
+                        char_id = int(charban_arg)
+                        if char_id not in objection_bot.charban_ids:
+                            objection_bot.charban_ids.append(char_id)
+                            save_charbans(objection_bot.charban_ids)
+                            print(f"✅ Added banned character ID: {char_id}")
+                            print(f"   Total banned character IDs: {len(objection_bot.charban_ids)}")
+                        else:
+                            print(f"⚠️ Character ID {char_id} already exists in charban list")
+                    except ValueError:
+                        print(f"❌ Invalid character ID: '{charban_arg}'")
+                        print("   Character IDs must be numbers (e.g., charban add 408757)")
+                
+                elif charban_action == "remove" and charban_arg:
+                    # Remove a banned character ID
+                    try:
+                        char_id = int(charban_arg)
+                        if char_id in objection_bot.charban_ids:
+                            objection_bot.charban_ids.remove(char_id)
+                            save_charbans(objection_bot.charban_ids)
+                            print(f"✅ Removed banned character ID: {char_id}")
+                            print(f"   Remaining banned character IDs: {len(objection_bot.charban_ids)}")
+                        else:
+                            print(f"❌ Character ID {char_id} not found in charban list")
+                            if objection_bot.charban_ids:
+                                print("   Current banned character IDs:")
+                                for i, cid in enumerate(objection_bot.charban_ids, 1):
+                                    print(f"      {i}. {cid}")
+                    except ValueError:
+                        print(f"❌ Invalid character ID: '{charban_arg}'")
+                        print("   Character IDs must be numbers (e.g., charban remove 408757)")
+                
+                elif charban_action == "list":
+                    # List all banned character IDs
+                    if objection_bot.charban_ids:
+                        print(f"🚫 Banned Character IDs ({len(objection_bot.charban_ids)}):")
+                        for i, cid in enumerate(objection_bot.charban_ids, 1):
+                            print(f"   {i}. {cid}")
+                    else:
+                        print("🚫 No banned character IDs configured")
+                        print("   Use 'charban add <character_id>' to add one")
+                
+                elif charban_action == "clear":
+                    # Clear all banned character IDs
+                    if objection_bot.charban_ids:
+                        count = len(objection_bot.charban_ids)
+                        objection_bot.charban_ids = []
+                        save_charbans(objection_bot.charban_ids)
+                        print(f"✅ Cleared all {count} banned character ID(s)")
+                    else:
+                        print("⚠️ No banned character IDs to clear")
+                
+                elif charban_action == "test" and charban_arg:
+                    # Test if a character ID would trigger a ban
+                    matched = objection_bot.check_charban(charban_arg)
+                    if matched is not None:
+                        print(f"🚫 Character ID '{charban_arg}' WOULD trigger a ban")
+                    else:
+                        print(f"✅ Character ID '{charban_arg}' would NOT trigger a ban")
+                        print(f"   No matches ({len(objection_bot.charban_ids)} banned IDs checked)")
+                
+                else:
+                    print("🚫 Charban Commands:")
+                    print("  charban add <character_id>    - Add a character ID to charban list")
+                    print("  charban remove <character_id> - Remove a character ID from charban list")
+                    print("  charban list                  - List all banned character IDs")
+                    print("  charban clear                 - Clear all banned character IDs")
+                    print("  charban test <character_id>   - Test if a character ID would trigger a ban")
+                    print("\n📝 Example:")
+                    print("  charban add 408757            - Ban users who send messages as character 408757")
+                    if not objection_bot.is_admin:
+                        print("\n⚠️ Note: Bot must be admin to execute bans")
+            
             elif cmd_lower == "bans":
                 # Show current ban list
                 if objection_bot.connected:
@@ -5042,6 +5186,12 @@ async def terminal_command_listener(objection_bot, discord_bot):
                 print("  autoban list             - List all autoban patterns")
                 print("  autoban clear            - Clear all patterns")
                 print("  autoban test <username>  - Test if username would be banned")
+                print("\n🎭 Charban Commands:")
+                print("  charban add <char_id>    - Add banned character ID")
+                print("  charban remove <char_id> - Remove banned character ID")
+                print("  charban list             - List all banned character IDs")
+                print("  charban clear            - Clear all banned character IDs")
+                print("  charban test <char_id>   - Test if character ID would trigger ban")
                 print("\n📡 Advanced:")
                 print("  ws <message>     - Send raw WebSocket message")
                 print("  websocket <msg>  - Send raw WebSocket message (alias)")
