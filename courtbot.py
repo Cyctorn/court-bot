@@ -2528,6 +2528,7 @@ class ObjectionBot:
         
         # Admin and moderation settings
         self.is_admin = False
+        self.room_owner_id = None  # Last known room owner ID (from room updates / transfers)
         self.current_mods = set()  # Set of current moderator user IDs
         self.banned_users = []  # List of banned users (only available when admin)
         
@@ -3127,6 +3128,16 @@ class ObjectionBot:
             else:
                 print(f"[MOD] No existing moderators in room")
         
+        # Detect room owner to sync admin status. This covers the case where the
+        # bot becomes owner automatically (e.g., joining an empty courtroom),
+        # since no owner_transfer event is sent in that scenario.
+        owner_id = data.get('ownerId') or data.get('owner')
+        if isinstance(owner_id, dict):
+            owner_id = owner_id.get('id')
+        if isinstance(owner_id, str) and owner_id:
+            self.room_owner_id = owner_id
+            self.sync_admin_status()
+        
         # Signal username change event if our username was updated
         if self.user_id:
             for user in valid_users:
@@ -3135,11 +3146,28 @@ class ObjectionBot:
                         log_verbose(f"[DEBUG] Username for our user_id matched pending username: {self._pending_username}")
                         self._username_change_event.set()
     
+    def sync_admin_status(self):
+        """Sync is_admin from the last known room owner ID.
+        
+        Needed because owner_transfer events only fire on explicit transfers -
+        a bot that is owner from the start (empty courtroom) would otherwise
+        never get is_admin set."""
+        if not self.user_id or not self.room_owner_id:
+            return  # Can't determine yet (waiting for 'me' response or room data)
+        if self.room_owner_id == self.user_id and not self.is_admin:
+            self.is_admin = True
+            print("👑 Bot is the room owner - admin status enabled (detected from room data)")
+        elif self.room_owner_id != self.user_id and self.is_admin:
+            self.is_admin = False
+            print("👑 Bot is no longer admin - room owner is someone else (detected from room data)")
+    
     async def handle_me_response(self, data):
         """Handle 'me' response to get our user ID"""
         if 'user' in data and 'id' in data['user']:
             self.user_id = data['user']['id']
             log_verbose(f"🤖 Bot ID: {self.user_id}")
+            # Re-check admin status in case room data arrived before the 'me' response
+            self.sync_admin_status()
     
     async def handle_user_joined(self, data):
         """Handle user_joined events"""
@@ -3260,6 +3288,9 @@ class ObjectionBot:
         """Handle owner/admin transfer events"""
         print(f"[ADMIN] Received owner_transfer: new_owner_id={new_owner_id}, room_code={room_code}")
         
+        # Track the current room owner
+        self.room_owner_id = new_owner_id
+        
         # Check if the bot received admin status
         if new_owner_id == self.user_id:
             print("🎯 Bot has been granted admin/owner status!")
@@ -3337,6 +3368,13 @@ class ObjectionBot:
     async def handle_update_room_admin(self, admin_data):
         """Handle admin-only room updates (includes ban list and other admin settings)"""
         print(f"[ADMIN] Received update_room_admin: {admin_data}")
+        
+        # The server only sends update_room_admin to the room admin, so receiving
+        # it is a reliable signal that the bot has admin status (covers rooms
+        # where ownership was granted without an owner_transfer event)
+        if not self.is_admin:
+            self.is_admin = True
+            print("👑 Bot received admin-only room data - admin status enabled")
         
         # Extract ban list if present
         if isinstance(admin_data, dict) and 'bans' in admin_data:
