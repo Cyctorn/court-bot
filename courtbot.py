@@ -368,7 +368,9 @@ class DiscordCourtBot(discord.Client):
         self._ping_rate_limit = {}
         
         # Pre-compile regex patterns for performance
-        self._mention_pattern = re.compile(r'<@\d+>')
+        self._user_mention_pattern = re.compile(r'<@!?(\d+)>')
+        self._role_mention_pattern = re.compile(r'<@&(\d+)>')
+        self._channel_mention_pattern = re.compile(r'<#(\d+)>')
         self._bgm_pattern = re.compile(r'\[#bgm(\d+)\]')
         self._sfx_pattern = re.compile(r'\[#bgs(\d+)\]')
         self._evidence_pattern = re.compile(r'\[#evdi?(\d+)\]')
@@ -376,6 +378,85 @@ class DiscordCourtBot(discord.Client):
         self._discord_cdn_pattern = re.compile(r'https?://(?:media\.discordapp\.net|cdn\.discordapp\.com|cdn\.discord\.com)/attachments/\S+')
         self._discord_domain_pattern = re.compile(r'^https?://[^/]*discord(?:app)?\.(?:com|net)(?:/|$)', re.IGNORECASE)
     
+    def _resolve_guild(self, message=None):
+        """Find the guild to use for mention lookups"""
+        if message is not None and getattr(message, 'guild', None):
+            return message.guild
+        if self.bridge_channel is not None:
+            return self.bridge_channel.guild
+        if self.guild_id:
+            return self.get_guild(self.guild_id)
+        return None
+
+    def resolve_mentions(self, content, message=None):
+        """Convert Discord mention markup into readable plain text.
+
+        <@123>/<@!123> -> @Nickname (bridge nickname if set, else server display name)
+        <@&123>        -> @RoleName
+        <#123>         -> #channel-name
+
+        Anything that cannot be resolved is replaced with a generic placeholder so
+        raw snowflake IDs are never relayed to the courtroom.
+        """
+        if not content or '<' not in content:
+            return content
+
+        guild = self._resolve_guild(message)
+
+        # Names Discord already resolved for us on the message object (most reliable)
+        resolved_users = {}
+        if message is not None:
+            for user in getattr(message, 'mentions', None) or []:
+                resolved_users[user.id] = getattr(user, 'display_name', None) or user.name
+        resolved_roles = {}
+        if message is not None:
+            for role in getattr(message, 'role_mentions', None) or []:
+                resolved_roles[role.id] = role.name
+        resolved_channels = {}
+        if message is not None:
+            for channel in getattr(message, 'channel_mentions', None) or []:
+                resolved_channels[channel.id] = getattr(channel, 'name', None)
+
+        def user_repl(match):
+            uid = int(match.group(1))
+            # Prefer the bridge nickname so the mention matches how that user
+            # appears inside the courtroom
+            name = self.nicknames.get(str(uid))
+            if not name:
+                name = resolved_users.get(uid)
+            if not name and guild is not None:
+                member = guild.get_member(uid)
+                if member:
+                    name = member.display_name or member.name
+            if not name:
+                user = self.get_user(uid)
+                if user:
+                    name = getattr(user, 'display_name', None) or user.name
+            return f"@{name}" if name else "@someone"
+
+        def role_repl(match):
+            rid = int(match.group(1))
+            name = resolved_roles.get(rid)
+            if not name and guild is not None:
+                role = guild.get_role(rid)
+                if role:
+                    name = role.name
+            return f"@{name}" if name else "@role"
+
+        def channel_repl(match):
+            cid = int(match.group(1))
+            name = resolved_channels.get(cid)
+            if not name:
+                channel = self.get_channel(cid)
+                if channel is not None:
+                    name = getattr(channel, 'name', None)
+            return f"#{name}" if name else "#channel"
+
+        content = self._role_mention_pattern.sub(role_repl, content)
+        content = self._user_mention_pattern.sub(user_repl, content)
+        content = self._channel_mention_pattern.sub(channel_repl, content)
+        return content
+
     async def fetch_music_url(self, bgm_id, validate_url=False):
         """Fetch the actual external URL for a BGM ID from objection.lol's API
         
@@ -1775,11 +1856,6 @@ class DiscordCourtBot(discord.Client):
             if any(pattern in message.content for pattern in ignore_patterns):
                 return
             
-            # Ignore messages with Discord user mentions (<@numbers>)
-            if self._mention_pattern.search(message.content):
-                print(f"🚫 Ignoring message with user mention: {message.content[:50]}...")
-                return
-            
             # Note: !commands (8ball, slap, roll) are NOT handled here on Discord side
             # They get relayed to courtroom where the bot processes them and sends embeds back
             # This prevents duplicate responses
@@ -1813,6 +1889,14 @@ class DiscordCourtBot(discord.Client):
                         if base_url in auth_url_map:
                             message_content = message_content.replace(bare_url, auth_url_map[base_url])
                             log_verbose(f"🔑 Replaced bare Discord CDN URL with authenticated version")
+            
+            # Convert Discord mentions (<@id>, <@&id>, <#id>) into readable names
+            # so messages containing mentions can be relayed instead of dropped
+            if '<' in message_content:
+                resolved_content = self.resolve_mentions(message_content, message)
+                if resolved_content != message_content:
+                    log_verbose(f"🏷️ Resolved mentions: {message_content[:50]}... → {resolved_content[:50]}...")
+                    message_content = resolved_content
             
             # Prepare message content with media
             content_parts = []
@@ -1906,7 +1990,7 @@ class DiscordCourtBot(discord.Client):
                 log_verbose(f"🔄 Reset avatar tracking after Discord message")
                 
                 # Log the message in simple format for non-verbose mode
-                log_message("Discord", display_name, message.content if message.content else "[media]")
+                log_message("Discord", display_name, message_content if message_content else "[media]")
                 log_verbose(f"🔄 Discord → Queue: {target_username}: {send_content[:50]}...")
             else:
                 log_verbose(f"❌ Failed to queue message to objection.lol")
@@ -1918,6 +2002,10 @@ class DiscordCourtBot(discord.Client):
         if self.bridge_channel:
             # Strip color codes before sending to Discord
             cleaned_message = self.strip_color_codes(message)
+            
+            # Convert any raw mention markup typed in the courtroom into plain
+            # text names (no accidental pings, no raw snowflake IDs on display)
+            cleaned_message = self.resolve_mentions(cleaned_message)
             
             # Check for BGM commands and fetch music URLs (limit to 3 per message to prevent spam)
             bgm_ids = self.extract_bgm_commands(message)
@@ -2160,14 +2248,20 @@ class DiscordCourtBot(discord.Client):
                 else:
                     # Send as plain text without avatar (no avatar available OR same user+pose as last message)
                     formatted_message = f"**{username}**:\n{cleaned_message}\n-# <t:{unix_timestamp}:T>"
-                    sent_message = await self.bridge_channel.send(formatted_message)
+                    sent_message = await self.bridge_channel.send(
+                        formatted_message,
+                        allowed_mentions=discord.AllowedMentions.none()
+                    )
             except Exception as e:
                 # If embed sending fails (e.g., bad avatar URL), fall back to plain text
                 print(f"⚠️ Failed to send message as embed: {e}")
                 log_verbose(f"⚠️ Falling back to plain text for: {username}: {cleaned_message}")
                 try:
                     formatted_message = f"**{username}**:\n{cleaned_message}\n-# <t:{unix_timestamp}:T>"
-                    sent_message = await self.bridge_channel.send(formatted_message)
+                    sent_message = await self.bridge_channel.send(
+                        formatted_message,
+                        allowed_mentions=discord.AllowedMentions.none()
+                    )
                 except Exception as e2:
                     print(f"❌ Failed to send message even as plain text: {e2}")
                     return  # Exit early if we can't send at all
@@ -2555,7 +2649,6 @@ class ObjectionBot:
         self._discord_queue_processor_task = None
         
         # Pre-compile regex patterns for performance
-        self._mention_pattern = re.compile(r'<@\d+>')
         self._color_code_pattern = re.compile(r'\[#/[a-zA-Z]\]|\[#/c[a-fA-F0-9]{6}\]|\[/#\]|\[#ts\d+\]')
     
     async def connect_to_room(self):
@@ -2984,10 +3077,8 @@ class ObjectionBot:
             if any(pattern in text for pattern in ignore_patterns):
                 return
             
-            # Ignore messages with Discord user mentions (<@numbers>)
-            if self._mention_pattern.search(text):
-                log_verbose(f"🚫 Ignoring objection.lol message with user mention: {text[:50]}...")
-                return
+            # Note: raw Discord mention markup (<@id>) is converted to plain text
+            # names in DiscordCourtBot.send_to_discord instead of dropping the message
             
             # Get username from our stored mapping
             username = self.user_names.get(user_id)
@@ -3026,10 +3117,8 @@ class ObjectionBot:
             if any(pattern in text for pattern in ignore_patterns):
                 return
             
-            # Ignore messages with Discord user mentions (<@numbers>)
-            if self._mention_pattern.search(text):
-                log_verbose(f"🚫 Ignoring objection.lol plain message with user mention: {text[:50]}...")
-                return
+            # Note: raw Discord mention markup (<@id>) is converted to plain text
+            # names in DiscordCourtBot.send_to_discord instead of dropping the message
             
             # Get username from our stored mapping
             username = self.user_names.get(user_id)
