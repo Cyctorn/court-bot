@@ -3592,11 +3592,18 @@ class ObjectionBot:
             print(f"[BAN] Error banning user: {e}")
             return False
     
-    async def remove_ban(self, user_id):
+    async def remove_ban(self, ban_id):
         """Unban a user from the courtroom (admin only)
-        
-        Uses the update_room_admin WebSocket message to update the ban list.
-        Format: 42["update_room_admin",{"bans":[...],"password":"","autoTransferAdmin":true},"roomCode"]
+
+        IMPORTANT: ban_id is the *ban record* id from the 'bans' list in
+        update_room_admin, NOT the user's session id. Session ids (as used by
+        create_ban / user_joined / user_left) are ephemeral and change every
+        time a user reconnects, so the server assigns each ban its own id.
+        Format: 42["remove_ban","<banId>"]
+
+        Note: the ban list cannot be modified through update_room_admin - the
+        server ignores a "bans" field there and only honours "password" and
+        "autoTransferAdmin".
         """
         if not self.is_admin:
             print("[UNBAN] Cannot unban user - bot is not admin")
@@ -3607,34 +3614,26 @@ class ObjectionBot:
             return False
         
         try:
-            # Find and remove the user from the banned_users list
-            user_to_unban = None
+            # Find the matching entry in the banned_users list
+            ban_to_remove = None
             for ban in self.banned_users:
-                if ban.get('id') == user_id:
-                    user_to_unban = ban
+                if ban.get('id') == ban_id:
+                    ban_to_remove = ban
                     break
             
-            if not user_to_unban:
-                print(f"[UNBAN] User ID {user_id[:8]}... not found in ban list")
+            if not ban_to_remove:
+                print(f"[UNBAN] Ban ID {ban_id[:8]}... not found in ban list")
                 return False
             
-            # Create new ban list without the unbanned user
-            new_bans = [ban for ban in self.banned_users if ban.get('id') != user_id]
-            
-            # Send update_room_admin message with the new ban list
-            # Format: 42["update_room_admin",{"bans":[{"id":"...","username":"..."},...],"password":"","autoTransferAdmin":true},"roomCode"]
-            update_data = {
-                "bans": new_bans,
-                "password": "",  # Keep existing password (empty string means no change)
-                "autoTransferAdmin": True  # Keep auto-transfer enabled
-            }
-            message = f'42["update_room_admin",{json.dumps(update_data)},"{self.room_id}"]'
+            # Send remove_ban with the ban id as a plain string argument
+            message = f'42["remove_ban",{json.dumps(ban_id)}]'
             await self.websocket.send(message)
             
-            # Update local ban list
-            username = user_to_unban.get('username', f"User-{user_id[:8]}")
-            self.banned_users = new_bans
-            print(f"[UNBAN] Unbanned user: {username} ({user_id[:8]}...)")
+            # Optimistically update local ban list (server will broadcast the
+            # authoritative list via update_room_admin)
+            username = ban_to_remove.get('username', f"Ban-{ban_id[:8]}")
+            self.banned_users = [ban for ban in self.banned_users if ban.get('id') != ban_id]
+            print(f"[UNBAN] Unbanned user: {username} ({ban_id[:8]}...)")
             return True
         except Exception as e:
             print(f"[UNBAN] Error unbanning user: {e}")
