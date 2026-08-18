@@ -211,9 +211,21 @@ def save_ping_nicknames(ping_nicknames):
     except Exception as e:
         print(f"❌ Error saving ping nicknames: {e}")
 
+# Default number of Discord messages kept visible in the bridge channel.
+# Overridden by the MAX_MESSAGES environment variable (or settings.max_messages
+# in config.json). Nothing should hardcode a message-count limit anywhere else -
+# always read it via Config.get_max_messages().
+DEFAULT_MAX_MESSAGES = 50
+
+# Discord's history() endpoint is paginated; this caps how far back the cleanup
+# routines will look so a huge MAX_MESSAGES can't turn into an unbounded scan.
+MAX_HISTORY_SCAN = 1000
+
+
 class Config:
     def __init__(self, config_file='/app/data/config.json'):
         self.config_file = config_file
+        self._warned_scan_cap = False
         self.load_config()
     
     def load_config(self):
@@ -279,12 +291,18 @@ class Config:
                 print("🌍 Pose ID loaded from environment variable")
             except ValueError:
                 print(f"❌ Invalid POSE_ID environment variable")
-        if os.getenv('MAX_MESSAGES'):
+        max_messages_env = (os.getenv('MAX_MESSAGES') or '').strip()
+        if max_messages_env:
             try:
-                self.data['settings']['max_messages'] = int(os.getenv('MAX_MESSAGES'))
-                print("🌍 Max messages loaded from environment variable")
+                parsed_max_messages = int(max_messages_env)
+                if parsed_max_messages < 1:
+                    raise ValueError("must be at least 1")
+                self.data['settings']['max_messages'] = parsed_max_messages
+                print(f"🌍 Max messages loaded from environment variable: {parsed_max_messages}")
             except ValueError:
-                print(f"❌ Invalid MAX_MESSAGES environment variable")
+                print(f"❌ Invalid MAX_MESSAGES environment variable: {max_messages_env!r} (expected a positive integer)")
+        # Make sure the setting always exists so nothing has to guess a fallback
+        self.data['settings'].setdefault('max_messages', DEFAULT_MAX_MESSAGES)
         if os.getenv('DELETE_COMMANDS'):
             delete_commands_str = os.getenv('DELETE_COMMANDS').lower()
             self.data['settings']['delete_commands'] = delete_commands_str in ('true', '1', 'yes', 'on')
@@ -315,7 +333,7 @@ class Config:
                 "ignore_patterns": ["[System]", "[Bot]"],
                 "character_id": 408757,
                 "pose_id": 4998989,
-                "max_messages": 50,
+                "max_messages": DEFAULT_MAX_MESSAGES,
                 "delete_commands": True,
                 "show_join_leave": True,
                 "verbose": False,
@@ -336,6 +354,42 @@ class Config:
         if key is None:
             return self.data.get(section, {})
         return self.data.get(section, {}).get(key)
+
+    def get_max_messages(self):
+        """Get the Discord message limit as a validated positive int.
+
+        This is the single source of truth for the limit. It tolerates a
+        config.json that predates the setting, or one that stores a bad value,
+        by falling back to DEFAULT_MAX_MESSAGES instead of raising.
+        """
+        raw = self.data.get('settings', {}).get('max_messages', DEFAULT_MAX_MESSAGES)
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            print(f"❌ Invalid max_messages value ({raw!r}), using default {DEFAULT_MAX_MESSAGES}")
+            return DEFAULT_MAX_MESSAGES
+        if value < 1:
+            print(f"❌ max_messages must be at least 1 (got {value}), using 1")
+            return 1
+        return value
+
+    def get_history_scan_limit(self, extra=0):
+        """History fetch size that is guaranteed to cover the message limit.
+
+        Cleanup can only delete what it fetched, so every history() scan that
+        enforces the limit must request more than the limit itself.
+        """
+        max_messages = self.get_max_messages()
+        wanted = max_messages + extra
+        if wanted > MAX_HISTORY_SCAN and not self._warned_scan_cap:
+            # Warn once rather than silently failing to enforce the limit
+            self._warned_scan_cap = True
+            print(
+                f"⚠️ MAX_MESSAGES={max_messages} exceeds the history scan cap "
+                f"({MAX_HISTORY_SCAN}); cleanup will only see the newest "
+                f"{MAX_HISTORY_SCAN} messages"
+            )
+        return min(wanted, MAX_HISTORY_SCAN)
     def validate(self):
         """Validate configuration"""
         errors = []
@@ -363,14 +417,16 @@ def log_verbose(message):
     if VERBOSE_MODE:
         print(message)
 
-def log_message(source, username, message):
+def log_message(source, username, message, character_id=None):
     """Log a message in simple format for non-verbose mode"""
     if VERBOSE_MODE:
         # In verbose mode, this is handled by existing logs
         pass
     else:
-        # Simple format: (Source) Username: message
-        print(f"({source}) {username}: {message}")
+        # Simple format: (Source) [CharacterID] Username: message
+        # The character ID is dropped when unknown (plain messages, Discord relays)
+        character_prefix = f"[{character_id}] " if character_id is not None else ""
+        print(f"({source}) {character_prefix}{username}: {message}")
 
 class DiscordCourtBot(discord.Client):
     def __init__(self, objection_bot, config):
@@ -1049,7 +1105,7 @@ class DiscordCourtBot(discord.Client):
                     
                     # Remove old startup messages and send new one
                     await self.remove_previous_startup_messages()
-                    max_messages = self.config.get('settings', 'max_messages')
+                    max_messages = self.config.get_max_messages()
                     startup_embed = discord.Embed(
                         title="🌉 CourtDog Online",
                         description=f"Ruff (Bridge reconnected and is now active between Discord and Objection.lol. Only {max_messages} messages will be visible at a time.)",
@@ -1350,7 +1406,8 @@ class DiscordCourtBot(discord.Client):
                     log_verbose(f"🔍 Converting existing avatar embeds to plain text...")
                     converted_count = 0
                     
-                    async for message in self.bridge_channel.history(limit=50):
+                    # Cover every message the bridge keeps visible, not a fixed 50
+                    async for message in self.bridge_channel.history(limit=self.config.get_history_scan_limit(extra=10)):
                         if message == self.startup_message or message.author != self.user:
                             continue
                         
@@ -1846,7 +1903,7 @@ class DiscordCourtBot(discord.Client):
             await self.remove_previous_startup_messages()
             
             # Send startup message with commands info
-            max_messages = self.config.get('settings', 'max_messages')
+            max_messages = self.config.get_max_messages()
             embed = discord.Embed(
                 title="🌉 CourtDog Online",
                 description=f"Ruff (Bridge is now active between Discord and Objection.lol. Only {max_messages} messages will be visible at a time.)",
@@ -2307,7 +2364,7 @@ class DiscordCourtBot(discord.Client):
             self.last_message_pose_id = pose_id
             
             # Log the message in simple format for non-verbose mode
-            log_message("Chatroom", username, cleaned_message)
+            log_message("Chatroom", username, cleaned_message, character_id)
             log_verbose(f"🔄 Objection → Discord: {username}: {cleaned_message}")
             
             # --- Ping detection: scan for @mentions and nickname matches in courtroom messages ---
@@ -2432,8 +2489,10 @@ class DiscordCourtBot(discord.Client):
                 return
 
             deleted_count = 0
-            # Look through recent messages for previous startup messages
-            async for message in self.bridge_channel.history(limit=50):
+            # Look through recent messages for previous startup messages. Scan at
+            # least as far back as the configured message limit so old startup
+            # embeds don't survive when MAX_MESSAGES is raised.
+            async for message in self.bridge_channel.history(limit=self.config.get_history_scan_limit(extra=10)):
                 # Check if it's a bot message with "CourtDog Online" embed
                 if (message.author == self.user and 
                     message.embeds and 
@@ -2456,7 +2515,7 @@ class DiscordCourtBot(discord.Client):
 
     async def cleanup_messages(self):
         """Delete old messages to maintain message limit"""
-        max_messages = self.config.get('settings', 'max_messages')
+        max_messages = self.config.get_max_messages()
         buffer_threshold = 3  # Only start deleting when 3+ messages over limit
 
         try:
@@ -2465,9 +2524,13 @@ class DiscordCourtBot(discord.Client):
                 print("⚠️ Bot lacks 'Manage Messages' permission - cannot delete old messages")
                 return
 
-            # Fetch recent messages from the channel (get more than we need to ensure we have enough)
+            # Fetch recent messages from the channel. The scan window has to be
+            # larger than the limit itself (plus the buffer, plus the startup
+            # message we skip) or we could never observe an over-limit channel
+            # and cleanup would silently never trigger.
+            scan_limit = self.config.get_history_scan_limit(extra=buffer_threshold + 10)
             messages = []
-            async for message in self.bridge_channel.history(limit=100):
+            async for message in self.bridge_channel.history(limit=scan_limit):
                 # Skip the startup message
                 if self.startup_message and message.id == self.startup_message.id:
                     continue
@@ -2509,7 +2572,10 @@ class DiscordCourtBot(discord.Client):
                 print("⚠️ Bot lacks 'Manage Messages' permission - cannot delete messages for full cleanup")
                 return
             messages = []
-            async for message in self.bridge_channel.history(limit=200):
+            # limit=None walks the whole channel. A fixed cap here used to leave
+            # messages behind whenever the channel held more than the cap, which
+            # contradicts "delete all" and broke for MAX_MESSAGES above the cap.
+            async for message in self.bridge_channel.history(limit=None):
                 if self.startup_message and message.id == self.startup_message.id:
                     continue
                 messages.append(message)
