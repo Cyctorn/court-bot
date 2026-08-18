@@ -27,6 +27,8 @@ CHARACTER_FILE = '/app/data/characters.json'
 AUTOBAN_FILE = '/app/data/autobans.json'
 # Character ID autoban storage file
 CHARBAN_FILE = '/app/data/charbans.json'
+# Pose image URL autoban storage file
+POSEBAN_FILE = '/app/data/posebans.json'
 # Ping nickname storage file (for courtroom users to ping Discord users)
 PING_NICKNAME_FILE = '/app/data/ping_nicknames.json'
 
@@ -155,6 +157,39 @@ def save_charbans(charbans):
             json.dump(charbans, f, indent=2)
     except Exception as e:
         print(f"❌ Error saving charbans: {e}")
+
+def load_posebans():
+    """Load banned pose image URLs from file"""
+    if os.path.exists(POSEBAN_FILE):
+        try:
+            with open(POSEBAN_FILE, 'r') as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"❌ Error loading posebans: {e}")
+            return []
+    return []
+
+def save_posebans(posebans):
+    """Save banned pose image URLs to file"""
+    try:
+        # Ensure the directory exists
+        os.makedirs(os.path.dirname(POSEBAN_FILE), exist_ok=True)
+        with open(POSEBAN_FILE, 'w') as f:
+            json.dump(posebans, f, indent=2)
+    except Exception as e:
+        print(f"❌ Error saving posebans: {e}")
+
+def normalize_asset_url(url):
+    """Normalize an objection.lol asset URL so it can be compared reliably"""
+    if not url or not isinstance(url, str):
+        return None
+    url = url.strip()
+    if not url:
+        return None
+    # Some assets are served as site-relative paths
+    if url.startswith('/'):
+        url = f"https://objection.lol{url}"
+    return url
 
 def load_ping_nicknames():
     """Load ping nicknames from file. Format: {discord_user_id: [nick1, nick2, ...]}"""
@@ -2632,6 +2667,14 @@ class ObjectionBot:
         # Character ID autobans (banned character IDs for automatic banning)
         self.charban_ids = load_charbans()
         
+        # Pose image URL autobans (banned pose image URLs for automatic banning).
+        # Catches re-uploaded characters that reuse the same image, which charban
+        # can't do because a re-upload gets a brand new character ID.
+        self.poseban_urls = load_posebans()
+        self._pose_cache = {}  # character_id -> {'data': {...} or None, 'ts': float}
+        self._pose_cache_ttl = 3600  # seconds before a character is re-fetched
+        self._pose_fetch_tasks = {}  # character_id -> in-flight fetch task (dedupes spam)
+        
         # For Discord bridge compatibility and message queueing
         self._username_change_event = asyncio.Event()
         self._pending_username = None
@@ -2990,6 +3033,29 @@ class ObjectionBot:
                     return  # Don't process/relay the message from banned users
                 else:
                     print(f"⚠️ CHARBAN: User '{username}' used banned character ID {matched_char_id} but bot is not admin - cannot ban")
+
+        # Check pose image URL autoban (catches re-uploaded characters that reuse
+        # the same art, which charban misses because the character ID changes)
+        if self.poseban_urls and user_id and user_id != self.user_id:
+            poseban_char_id = message.get('characterId')
+            poseban_pose_id = message.get('poseId')
+            if poseban_char_id is not None and poseban_pose_id is not None:
+                cached_character = self.get_cached_character(poseban_char_id)
+                if cached_character is not None:
+                    # Cache hit - resolve inline, no network I/O on the WS loop
+                    matched_entry, matched_url, matched_pose = self.check_poseban_data(
+                        cached_character['data'], poseban_pose_id
+                    )
+                    if matched_entry:
+                        await self.execute_poseban(user_id, matched_entry, matched_url, matched_pose)
+                        if self.is_admin:
+                            return  # Don't process/relay the message from banned users
+                else:
+                    # Unknown character - look it up in the background so the
+                    # WebSocket read loop never waits on an HTTP request
+                    asyncio.create_task(
+                        self.poseban_lookup_and_ban(user_id, poseban_char_id, poseban_pose_id)
+                    )
 
         # Check for pairing request message
         if "Please pair with me CourtDog-sama" in text and self._pending_pair_request and user_id != self.user_id:
@@ -3663,6 +3729,202 @@ class ObjectionBot:
             except (ValueError, TypeError):
                 continue
         return None
+    
+    # ------------------------------------------------------------------
+    # Pose image URL autoban (poseban)
+    # ------------------------------------------------------------------
+    
+    def get_cached_character(self, character_id):
+        """Return the cached character entry for an ID, or None if it isn't
+        cached or the cache entry has expired.
+        
+        entry['data'] is None for a cached negative result (unknown character,
+        API error, etc.) so failures don't get retried on every single message.
+        """
+        try:
+            cid = int(character_id)
+        except (TypeError, ValueError):
+            return None
+        
+        entry = self._pose_cache.get(cid)
+        if entry is None:
+            return None
+        if (time.time() - entry['ts']) >= self._pose_cache_ttl:
+            del self._pose_cache[cid]
+            return None
+        return entry
+    
+    async def _fetch_character_poses_uncached(self, cid):
+        """Perform the actual character asset API request and cache the result"""
+        api_url = f"https://objection.lol/api/assets/character/{cid}"
+        data = None
+        
+        try:
+            timeout = aiohttp.ClientTimeout(total=10)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(api_url) as response:
+                    if response.status == 200:
+                        character_data = await response.json()
+                        poses = {}
+                        for pose in character_data.get('poses', []):
+                            pose_id = pose.get('id')
+                            if pose_id is None:
+                                continue
+                            poses[pose_id] = {
+                                'name': pose.get('name', 'Unknown Pose'),
+                                'idle': normalize_asset_url(pose.get('idleImageUrl')),
+                                'speak': normalize_asset_url(pose.get('speakImageUrl'))
+                            }
+                        data = {
+                            'name': character_data.get('name', 'Unknown'),
+                            'poses': poses
+                        }
+                        log_verbose(f"🎭 Cached {len(poses)} pose(s) for character {cid} ({data['name']})")
+                    elif response.status == 404:
+                        log_verbose(f"❌ Pose lookup: character {cid} not found")
+                    else:
+                        log_verbose(f"❌ Pose lookup: character {cid} returned status {response.status}")
+        except Exception as e:
+            log_verbose(f"❌ Pose lookup: error fetching character {cid}: {e}")
+        
+        # Negative results are cached too so a spam flood can't hammer the API
+        self._pose_cache[cid] = {'data': data, 'ts': time.time()}
+        return data
+    
+    async def fetch_character_poses(self, character_id, use_cache=True):
+        """Fetch a character's poses from objection.lol's asset API.
+        
+        Returns {'name': str, 'poses': {pose_id: {'name', 'idle', 'speak'}}}
+        or None on failure. Results are cached per character ID and concurrent
+        requests for the same character share a single API call.
+        """
+        try:
+            cid = int(character_id)
+        except (TypeError, ValueError):
+            return None
+        
+        if use_cache:
+            entry = self.get_cached_character(cid)
+            if entry is not None:
+                return entry['data']
+        
+        # Collapse concurrent lookups so a flood of messages using the same
+        # character only produces one API request
+        inflight = self._pose_fetch_tasks.get(cid)
+        if inflight is not None:
+            try:
+                return await asyncio.shield(inflight)
+            except Exception:
+                return None
+        
+        task = asyncio.ensure_future(self._fetch_character_poses_uncached(cid))
+        self._pose_fetch_tasks[cid] = task
+        try:
+            return await task
+        except Exception:
+            return None
+        finally:
+            self._pose_fetch_tasks.pop(cid, None)
+    
+    def match_poseban(self, url):
+        """Check a single image URL against the poseban list.
+        
+        Plain entries match as case-insensitive substrings, so a full URL
+        matches exactly while a host or file ID bans everything under it.
+        Entries prefixed with 're:' are treated as regex patterns.
+        """
+        if not url:
+            return None
+        
+        url_lower = url.lower()
+        for entry in self.poseban_urls:
+            if not isinstance(entry, str):
+                continue
+            entry = entry.strip()
+            if not entry:
+                continue
+            
+            if entry.lower().startswith('re:'):
+                expression = entry[3:].strip()
+                if not expression:
+                    continue
+                try:
+                    if re.search(expression, url, re.IGNORECASE):
+                        return entry
+                except re.error:
+                    continue
+            elif entry.lower() in url_lower:
+                return entry
+        return None
+    
+    def check_poseban_data(self, character_data, pose_id):
+        """Check the pose used in a message against the poseban list.
+        
+        Returns (matched_entry, matched_url, pose_name) or (None, None, None).
+        """
+        if not character_data or pose_id is None:
+            return None, None, None
+        
+        poses = character_data.get('poses', {})
+        pose = poses.get(pose_id)
+        if pose is None:
+            # Pose IDs normally arrive as ints, but tolerate string forms
+            try:
+                pose = poses.get(int(pose_id))
+            except (TypeError, ValueError):
+                pose = None
+        if pose is None:
+            return None, None, None
+        
+        # Both frames of the pose are checked - the banned art could be either
+        for url in (pose.get('idle'), pose.get('speak')):
+            matched = self.match_poseban(url)
+            if matched:
+                return matched, url, pose.get('name', 'Unknown Pose')
+        return None, None, None
+    
+    async def execute_poseban(self, user_id, matched_entry, matched_url, pose_name=None):
+        """Ban a user who posted using a banned pose image"""
+        username = self.user_names.get(user_id, f"User-{user_id[:8]}")
+        pose_desc = f" (pose '{pose_name}')" if pose_name else ""
+        
+        if not self.is_admin:
+            print(f"⚠️ POSEBAN: User '{username}' used banned pose image{pose_desc} matching '{matched_entry}' but bot is not admin - cannot ban")
+            return False
+        
+        print(f"🚫 POSEBAN: User '{username}' used banned pose image{pose_desc} matching '{matched_entry}' - banning immediately...")
+        print(f"   Image URL: {matched_url}")
+        
+        # Send "Ruff (Banned undesirable)" message to courtroom
+        original_username = self.config.get('objection', 'bot_username')
+        await self.change_username_and_wait(original_username)
+        await self.send_message("Ruff (Banned undesirable)")
+        
+        # Execute the ban
+        await self.create_ban(user_id)
+        
+        # Remove from user mapping since they're banned
+        if user_id in self.user_names:
+            del self.user_names[user_id]
+        
+        return True
+    
+    async def poseban_lookup_and_ban(self, user_id, character_id, pose_id):
+        """Resolve an uncached character in the background and ban the sender if
+        the pose they used is on the poseban list.
+        
+        This runs as its own task so the WebSocket read loop never blocks on an
+        HTTP request - blocking it delays ping replies and causes disconnects.
+        """
+        try:
+            character_data = await self.fetch_character_poses(character_id)
+            matched, matched_url, pose_name = self.check_poseban_data(character_data, pose_id)
+            if matched:
+                await self.execute_poseban(user_id, matched, matched_url, pose_name)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            log_verbose(f"❌ POSEBAN background check failed for character {character_id}: {e}")
     
     async def update_moderators(self):
         """Update the moderator list on the server"""
@@ -4971,6 +5233,27 @@ async def terminal_command_listener(objection_bot, discord_bot):
                         print(f"❌ Invalid aspect ratio '{ratio}'. Valid options: {', '.join(valid_ratios)}")
                 else:
                     print("❌ Please provide an aspect ratio after 'aspect'. Example: aspect 16:9")
+            elif cmd_lower.startswith("password ") or cmd_lower == "password":
+                # Set or remove the room password
+                password = cmd[9:].strip() if len(cmd) > 8 else ""  # Remove "password " prefix (preserving case)
+                if objection_bot.connected:
+                    if objection_bot.is_admin:
+                        if password:
+                            print(f"🔒 Setting room password to: '{password}'")
+                        else:
+                            print("🔓 Removing room password (making room public)...")
+                        success = await objection_bot.update_room_password(password)
+                        if success:
+                            if password:
+                                print("✅ Room password set successfully!")
+                            else:
+                                print("✅ Room password removed successfully!")
+                        else:
+                            print("❌ Failed to update room password.")
+                    else:
+                        print("❌ Bot is not admin. Cannot change room password.")
+                else:
+                    print("❌ Not connected to objection.lol. Use 'reconnect' first.")
             elif cmd_lower == "config":
                 # Show current configuration
                 print("⚙️ Current Configuration:")
@@ -5197,6 +5480,152 @@ async def terminal_command_listener(objection_bot, discord_bot):
                     if not objection_bot.is_admin:
                         print("\n⚠️ Note: Bot must be admin to execute bans")
             
+            elif cmd_lower == "poseban" or cmd_lower.startswith("poseban "):
+                # Pose image URL autoban management commands
+                poseban_cmd = cmd[8:].strip()  # Remove "poseban " prefix
+                poseban_parts = poseban_cmd.split(" ", 1)
+                poseban_action = poseban_parts[0].lower() if poseban_parts else ""
+                poseban_arg = poseban_parts[1].strip() if len(poseban_parts) > 1 else ""
+                
+                if poseban_action == "add" and poseban_arg:
+                    # Add a new banned pose image URL
+                    valid = True
+                    if poseban_arg.lower().startswith('re:'):
+                        # Validate regex entries up front so a broken pattern
+                        # never gets silently skipped at match time
+                        try:
+                            re.compile(poseban_arg[3:].strip())
+                        except re.error as e:
+                            valid = False
+                            print(f"❌ Invalid regex pattern: {e}")
+                            print("   Tip: drop the 're:' prefix to match the URL as plain text")
+                    
+                    if valid:
+                        if poseban_arg in objection_bot.poseban_urls:
+                            print(f"⚠️ '{poseban_arg}' already exists in poseban list")
+                        else:
+                            objection_bot.poseban_urls.append(poseban_arg)
+                            save_posebans(objection_bot.poseban_urls)
+                            print(f"✅ Added banned pose image URL: {poseban_arg}")
+                            print(f"   Total banned pose image URLs: {len(objection_bot.poseban_urls)}")
+                
+                elif poseban_action == "remove" and poseban_arg:
+                    # Remove a banned pose image URL
+                    target = None
+                    for entry in objection_bot.poseban_urls:
+                        if isinstance(entry, str) and entry.lower() == poseban_arg.lower():
+                            target = entry
+                            break
+                    
+                    if target is not None:
+                        objection_bot.poseban_urls.remove(target)
+                        save_posebans(objection_bot.poseban_urls)
+                        print(f"✅ Removed banned pose image URL: {target}")
+                        print(f"   Remaining banned pose image URLs: {len(objection_bot.poseban_urls)}")
+                    else:
+                        print(f"❌ '{poseban_arg}' not found in poseban list")
+                        if objection_bot.poseban_urls:
+                            print("   Current banned pose image URLs:")
+                            for i, entry in enumerate(objection_bot.poseban_urls, 1):
+                                print(f"      {i}. {entry}")
+                
+                elif poseban_action == "list":
+                    # List all banned pose image URLs
+                    if objection_bot.poseban_urls:
+                        print(f"🚫 Banned Pose Image URLs ({len(objection_bot.poseban_urls)}):")
+                        for i, entry in enumerate(objection_bot.poseban_urls, 1):
+                            print(f"   {i}. {entry}")
+                    else:
+                        print("🚫 No banned pose image URLs configured")
+                        print("   Use 'poseban add <url>' to add one")
+                
+                elif poseban_action == "clear":
+                    # Clear all banned pose image URLs
+                    if objection_bot.poseban_urls:
+                        count = len(objection_bot.poseban_urls)
+                        objection_bot.poseban_urls = []
+                        save_posebans(objection_bot.poseban_urls)
+                        print(f"✅ Cleared all {count} banned pose image URL(s)")
+                    else:
+                        print("⚠️ No banned pose image URLs to clear")
+                
+                elif poseban_action == "test" and poseban_arg:
+                    # Test a raw image URL against the poseban list
+                    normalized = normalize_asset_url(poseban_arg)
+                    matched = objection_bot.match_poseban(normalized)
+                    if matched:
+                        print(f"🚫 Image URL WOULD trigger a ban (matched '{matched}')")
+                    else:
+                        print("✅ Image URL would NOT trigger a ban")
+                        print(f"   No matches ({len(objection_bot.poseban_urls)} entries checked)")
+                
+                elif poseban_action == "lookup" and poseban_arg:
+                    # Show every pose of a character with its image URLs, so the
+                    # offending URL from a message can be copied straight out
+                    character_data = await objection_bot.fetch_character_poses(poseban_arg, use_cache=False)
+                    if not character_data:
+                        print(f"❌ Could not fetch character '{poseban_arg}' (unknown ID or API error)")
+                    else:
+                        poses = character_data.get('poses', {})
+                        print(f"🎭 Character {poseban_arg} - {character_data.get('name', 'Unknown')} ({len(poses)} pose(s)):")
+                        for pose_id, pose in poses.items():
+                            flag = "🚫" if (objection_bot.match_poseban(pose.get('idle')) or
+                                            objection_bot.match_poseban(pose.get('speak'))) else "  "
+                            print(f"   {flag} [{pose_id}] {pose.get('name', 'Unknown Pose')}")
+                            print(f"        idle:  {pose.get('idle')}")
+                            print(f"        speak: {pose.get('speak')}")
+                
+                elif poseban_action == "check" and poseban_arg:
+                    # Resolve a specific character/pose pair and test it
+                    check_parts = poseban_arg.split()
+                    if len(check_parts) != 2:
+                        print("❌ Usage: poseban check <character_id> <pose_id>")
+                    else:
+                        character_data = await objection_bot.fetch_character_poses(check_parts[0], use_cache=False)
+                        if not character_data:
+                            print(f"❌ Could not fetch character '{check_parts[0]}' (unknown ID or API error)")
+                        else:
+                            try:
+                                lookup_pose_id = int(check_parts[1])
+                            except ValueError:
+                                lookup_pose_id = check_parts[1]
+                            matched, matched_url, pose_name = objection_bot.check_poseban_data(
+                                character_data, lookup_pose_id
+                            )
+                            if matched:
+                                print(f"🚫 Pose '{pose_name}' WOULD trigger a ban (matched '{matched}')")
+                                print(f"   Image URL: {matched_url}")
+                            else:
+                                pose = character_data.get('poses', {}).get(lookup_pose_id)
+                                if pose is None:
+                                    print(f"❌ Pose {check_parts[1]} not found on character {check_parts[0]}")
+                                else:
+                                    print(f"✅ Pose '{pose.get('name')}' would NOT trigger a ban")
+                                    print(f"   idle:  {pose.get('idle')}")
+                                    print(f"   speak: {pose.get('speak')}")
+                
+                else:
+                    print("🚫 Poseban Commands:")
+                    print("  poseban add <url>             - Ban a pose image URL")
+                    print("  poseban remove <url>          - Remove a pose image URL from the list")
+                    print("  poseban list                  - List all banned pose image URLs")
+                    print("  poseban clear                 - Clear all banned pose image URLs")
+                    print("  poseban test <url>            - Test if an image URL would trigger a ban")
+                    print("  poseban lookup <char_id>      - List a character's poses and image URLs")
+                    print("  poseban check <char_id> <pose_id> - Test a specific pose")
+                    print("\n📝 Matching:")
+                    print("  Plain entries match as case-insensitive substrings, so a full")
+                    print("  URL matches exactly while a host or file ID bans everything under it.")
+                    print("  Prefix an entry with 're:' to match with a regex instead.")
+                    print("\n📝 Examples:")
+                    print("  poseban add https://files.catbox.moe/t2p9j0.webp - Ban that exact image")
+                    print("  poseban add files.catbox.moe/t2p9j0              - Ban both frames of it")
+                    print("  poseban add re:badhost\\.example\\.com/.*\\.webp    - Ban by regex")
+                    print("\n💡 Tip: use 'poseban lookup <char_id>' with the characterId from a")
+                    print("   message to find the exact image URL to ban.")
+                    if not objection_bot.is_admin:
+                        print("\n⚠️ Note: Bot must be admin to execute bans")
+            
             elif cmd_lower == "bans":
                 # Show current ban list
                 if objection_bot.connected:
@@ -5302,6 +5731,8 @@ async def terminal_command_listener(objection_bot, discord_bot):
                 print("  slowmode <0-60>  - Set slow mode seconds (admin only)")
                 print("  textbox <style>  - Change textbox style (admin only)")
                 print("  aspect <ratio>   - Change aspect ratio (admin only)")
+                print("  password <pass>  - Set room password (admin only)")
+                print("  password         - Remove room password (admin only)")
                 print("\n🚫 Ban Management:")
                 print("  bans             - Show banned users list")
                 print("  ban <username>   - Ban a user (admin only)")
@@ -5318,6 +5749,14 @@ async def terminal_command_listener(objection_bot, discord_bot):
                 print("  charban list             - List all banned character IDs")
                 print("  charban clear            - Clear all banned character IDs")
                 print("  charban test <char_id>   - Test if character ID would trigger ban")
+                print("\n🖼️ Poseban Commands:")
+                print("  poseban add <url>        - Add banned pose image URL")
+                print("  poseban remove <url>     - Remove banned pose image URL")
+                print("  poseban list             - List all banned pose image URLs")
+                print("  poseban clear            - Clear all banned pose image URLs")
+                print("  poseban test <url>       - Test if an image URL would trigger ban")
+                print("  poseban lookup <char_id> - Show a character's poses and image URLs")
+                print("  poseban check <char_id> <pose_id> - Test a specific pose")
                 print("\n📡 Advanced:")
                 print("  ws <message>     - Send raw WebSocket message")
                 print("  websocket <msg>  - Send raw WebSocket message (alias)")
