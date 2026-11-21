@@ -5918,44 +5918,52 @@ async def main():
     objection_success = await objection_bot.connect_to_room()
     if objection_success:
         log_verbose("✅ Objection.lol connection successful!")
-        # Start Discord bot in background
-        log_verbose("🔌 Starting Discord bot...")
-        discord_task = asyncio.create_task(discord_bot.start(config.get('discord', 'token')))
-        # Start terminal command listener in background
-        terminal_task = asyncio.create_task(terminal_command_listener(objection_bot, discord_bot))
-        
-        # Setup signal handlers for graceful shutdown
-        setup_signal_handlers(asyncio.get_running_loop(), objection_bot, discord_bot)
-        
+    else:
+        # Don't exit (which would stop the container) - keep Discord and the
+        # console running so the connection can be retried, e.g. with
+        # 'reconnect <password>' if the room is password protected.
+        print("❌ Failed to connect to objection.lol. Staying alive; auto-reconnect will retry.")
+        print("   Use 'reconnect' or 'reconnect <password>' in the console, or /reconnect in Discord.")
+        await objection_bot.start_auto_reconnect()
+    
+    # Start Discord bot in background
+    log_verbose("🔌 Starting Discord bot...")
+    discord_task = asyncio.create_task(discord_bot.start(config.get('discord', 'token')))
+    # Start terminal command listener in background
+    terminal_task = asyncio.create_task(terminal_command_listener(objection_bot, discord_bot))
+    
+    # Setup signal handlers for graceful shutdown
+    setup_signal_handlers(asyncio.get_running_loop(), objection_bot, discord_bot)
+    
+    if objection_success:
         # Send initial greeting
         await asyncio.sleep(3)  # Wait for Discord bot to connect
         # Revert to original bot username for initial greeting
         original_username = objection_bot.config.get('objection', 'bot_username')
         await objection_bot.change_username_and_wait(original_username)
         await objection_bot.send_message("[#bgs20412]Ruff (Relaying messages)")
-        
-        # Choose mode based on configuration
-        mode = config.get('settings', 'mode')
-        if mode == "interactive":
-            print("💬 Interactive mode enabled")
-            await objection_bot.interactive_mode()
-        else:
-            print("🌉 Bridge mode active. Messages will be relayed between Discord and Objection.lol")
-            print("Press Ctrl+C to stop the bot")
-        
-        try:
-            # Keep both bots running
-            await asyncio.gather(
-                discord_task,
-                objection_bot.keep_alive(),
-                terminal_task
-            )
-        except KeyboardInterrupt:
-            print("\n🛑 Stopping bots...")
-            discord_task.cancel()
-            terminal_task.cancel()
-            await shutdown(objection_bot, discord_bot)
+    
+    # Choose mode based on configuration
+    mode = config.get('settings', 'mode')
+    if mode == "interactive" and objection_success:
+        print("💬 Interactive mode enabled")
+        await objection_bot.interactive_mode()
     else:
-        print("❌ Failed to connect to objection.lol")
+        print("🌉 Bridge mode active. Messages will be relayed between Discord and Objection.lol")
+        print("Press Ctrl+C to stop the bot")
+    
+    try:
+        # Keep both bots running (Discord + console keep the process alive
+        # even while the courtroom connection is down)
+        await asyncio.gather(
+            discord_task,
+            objection_bot.keep_alive(),
+            terminal_task
+        )
+    except KeyboardInterrupt:
+        print("\n🛑 Stopping bots...")
+        discord_task.cancel()
+        terminal_task.cancel()
+        await shutdown(objection_bot, discord_bot)
 if __name__ == "__main__":
     asyncio.run(main())
