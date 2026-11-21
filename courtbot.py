@@ -10,6 +10,7 @@ import os
 import aioconsole
 import sys
 import aiohttp
+import urllib.parse
 import re
 import signal
 import time
@@ -2720,6 +2721,7 @@ class ObjectionBot:
         self.max_reconnect_attempts = 10
         self.reconnect_delay = 5  # seconds between attempts
         self.reconnect_task = None
+        self.room_password = ""  # Password used when joining the room (for locked rooms)
         
         # Admin and moderation settings
         self.is_admin = False
@@ -2760,11 +2762,24 @@ class ObjectionBot:
         # Pre-compile regex patterns for performance
         self._color_code_pattern = re.compile(r'\[#/[a-zA-Z]\]|\[#/c[a-fA-F0-9]{6}\]|\[/#\]|\[#ts\d+\]')
     
-    async def connect_to_room(self):
-        """Connect to the courtroom WebSocket using raw websockets"""
+    async def connect_to_room(self, password=None):
+        """Connect to the courtroom WebSocket using raw websockets.
+        
+        If password is given, it is remembered and used for this and future
+        (auto-)reconnects. Pass "" to clear a remembered password.
+        """
+        if password is not None:
+            self.room_password = password
         base_url = "wss://objection.lol"
         # Convert HTTP URL to WebSocket URL and construct with parameters
-        websocket_url = f"{base_url}/courtroom-api/socket.io/?roomId={self.room_id}&username={self.username}&password=&EIO=4&transport=websocket"
+        query = urllib.parse.urlencode({
+            "roomId": self.room_id,
+            "username": self.username,
+            "password": self.room_password or "",
+            "EIO": "4",
+            "transport": "websocket",
+        })
+        websocket_url = f"{base_url}/courtroom-api/socket.io/?{query}"
         
         try:
             # Disconnect first if already connected
@@ -2772,7 +2787,17 @@ class ObjectionBot:
                 await self.graceful_disconnect()
                 await asyncio.sleep(2)  # Wait longer for clean disconnection
 
-            print(f"🔌 Connecting to WebSocket: {websocket_url}")
+            display_url = websocket_url
+            if self.room_password:
+                display_query = urllib.parse.urlencode({
+                    "roomId": self.room_id,
+                    "username": self.username,
+                    "password": "***",
+                    "EIO": "4",
+                    "transport": "websocket",
+                })
+                display_url = f"{base_url}/courtroom-api/socket.io/?{display_query}"
+            print(f"🔌 Connecting to WebSocket: {display_url}")
             # Use default WebSocket settings, let server handle ping/pong
             self.websocket = await websockets.connect(websocket_url)
             print(f"✅ WebSocket connection established")
@@ -3277,6 +3302,10 @@ class ObjectionBot:
         """Handle room updates to get user information"""
         # Log the raw data structure for debugging
         log_verbose(f"[DEBUG] Room update data keys: {list(data.keys()) if isinstance(data, dict) else 'Not a dict'}")
+        
+        # Track the room password (when exposed) so reconnects can rejoin a locked room
+        if isinstance(data, dict) and isinstance(data.get('password'), str):
+            self.room_password = data['password']
         
         # The data parameter IS the room object, users are nested inside it
         users = data.get('users', [])
@@ -4998,6 +5027,7 @@ class ObjectionBot:
             update_data = {"password": password}
             message = f'42["update_room_admin",{json.dumps(update_data)}]'
             await self.websocket.send(message)
+            self.room_password = password  # Remember it so reconnects can rejoin
             print(f"[PASSWORD] Updated room password")
             return True
         except Exception as e:
@@ -5136,6 +5166,17 @@ async def terminal_command_listener(objection_bot, discord_bot):
             elif cmd_lower == "reconnect":
                 print("🔄 Reconnect command received. Attempting to reconnect...")
                 await objection_bot.connect_to_room()
+                print("✅ Reconnection attempted.")
+            elif cmd_lower.startswith("reconnect "):
+                # reconnect <password> - join a password-protected room
+                # "reconnect -" clears the remembered password
+                join_password = cmd[len("reconnect "):].strip()
+                if join_password == "-":
+                    print("🔓 Clearing remembered room password and reconnecting...")
+                    await objection_bot.connect_to_room(password="")
+                else:
+                    print("🔐 Reconnecting with room password...")
+                    await objection_bot.connect_to_room(password=join_password)
                 print("✅ Reconnection attempted.")
             elif cmd_lower.startswith("say "):
                 # Extract the message after "say "
@@ -5784,6 +5825,8 @@ async def terminal_command_listener(objection_bot, discord_bot):
                 print("Available commands:")
                 print("\n🔗 Connection:")
                 print("  connect/reconnect - Reconnect to objection.lol")
+                print("  reconnect <pass>  - Reconnect using a room password (remembered)")
+                print("  reconnect -       - Clear remembered password and reconnect")
                 print("  disconnect        - Disconnect from objection.lol")
                 print("  status           - Show detailed bot status")
                 print("  refresh          - Refresh room data")
